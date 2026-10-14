@@ -1,11 +1,13 @@
 # 免費部署：Supabase + Render + Vercel
 
 > 2026-10 更新：Hugging Face 的 Docker Space 已改為需要 PRO 訂閱（約 US$9／月），免費方案改用 **Render 免費 Web Service**（0.1 vCPU / 512 MB，編譯約慢 10 倍、閒置 15 分鐘休眠）。下方 Hugging Face 步驟保留給訂閱 PRO 的情況（Actions 改為手動執行）。後端用同一個映像 `infra/cloud/Dockerfile`，Render 的設定寫在 repo 根目錄的 `render.yaml`。
+>
+> 目前的正式網址：網站 `https://emb-studio-theta.vercel.app`（Vercel 專案 `emb-studio`，Root Directory `ai-embroidery-studio/apps/web`，追蹤分支 `embroidery-gate-a`）；API `https://emb-api.onrender.com`。
 
 | 服務 | 放什麼 |
 |---|---|
 | Supabase | 帳號登入、資料庫、上傳的圖與刺繡檔 |
-| Hugging Face Space | 後端 API ＋ Ink/Stitch 編譯（同一個服務，不需要 Redis） |
+| Render（原 Hugging Face Space） | 後端 API ＋ Ink/Stitch 編譯（同一個服務，不需要 Redis） |
 | Vercel | 網站畫面 |
 
 **順序很重要**：先 Supabase → 再 Vercel（拿到網址）→ 再 GitHub 設定 → 最後觸發部署。全部約 30 分鐘，其中 Hugging Face 第一次建置要等 10–20 分鐘。
