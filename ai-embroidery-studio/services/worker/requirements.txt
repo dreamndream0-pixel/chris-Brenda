@@ -1,0 +1,3 @@
+# Gate A worker (our code). Ink/Stitch's own deps are in infra/worker/inkstitch-requirements.txt.
+pyembroidery==1.5.1
+pytest==9.1.1

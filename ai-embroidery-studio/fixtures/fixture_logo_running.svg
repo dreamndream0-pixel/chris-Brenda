@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:inkstitch="http://inkstitch.org/namespace" width="40mm" height="20mm" viewBox="0 0 40 20">
+  <g id="layer1" inkscape:groupmode="layer" inkscape:label="running">
+    <path id="r1" d="M 5 5 L 35 5 L 35 15 L 5 15 Z" style="fill:none;stroke:#1f2a44;stroke-width:0.2"
+      inkstitch:stroke_method="running_stitch" inkstitch:running_stitch_length_mm="2.0" inkstitch:repeats="1"/>
+  </g>
+</svg>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:inkstitch="http://inkstitch.org/namespace" width="50mm" height="20mm" viewBox="0 0 50 20">
+  <g id="layer1" inkscape:groupmode="layer" inkscape:label="satin">
+    <!-- 兩條 rails（子路徑）＝均勻寬度 4 mm 的緞面柱 -->
+    <path id="r1" d="M 5 8 L 45 8 M 5 12 L 45 12" style="fill:none;stroke:#111111;stroke-width:0.2"
+      inkstitch:satin_column="True" inkstitch:zigzag_spacing_mm="0.4"
+      inkstitch:center_walk_underlay="True" inkstitch:contour_underlay="True"/>
+  </g>
+</svg>

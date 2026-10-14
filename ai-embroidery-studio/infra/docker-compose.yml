@@ -1,0 +1,14 @@
+# Gate A only: the worker runs the fixed fixtures offline. Redis/API join in Gate B.
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/worker/Dockerfile
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    cpus: 2
+    mem_limit: 2g
+    volumes:
+      - ../out:/out
+    command: ["python", "services/worker/gate_a.py", "--fixtures", "fixtures", "--out", "/out/gate-a"]

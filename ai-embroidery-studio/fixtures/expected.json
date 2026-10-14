@@ -1,0 +1,7 @@
+{
+  "_note": "Gate A 期望值。尺寸 = 設計幾何的外框（mm），容差吸收底針/拉縮補償；色數 = 預期線色區段數。",
+  "fixture_circle_fill.svg":   {"widthMm": 30, "heightMm": 30, "toleranceMm": 1.5, "colors": 1},
+  "fixture_logo_running.svg":  {"widthMm": 30, "heightMm": 10, "toleranceMm": 1.0, "colors": 1},
+  "fixture_two_color.svg":     {"widthMm": 40, "heightMm": 20, "toleranceMm": 1.5, "colors": 2},
+  "fixture_satin_stroke.svg":  {"widthMm": 40, "heightMm": 4,  "toleranceMm": 1.0, "colors": 1}
+}
