@@ -76,7 +76,11 @@ class SupabaseStorage:
         self.base = f"{url.rstrip('/')}/storage/v1"
         self.bucket = bucket
         self.http = client or httpx.Client(timeout=60.0)
-        self.headers = {"Authorization": f"Bearer {service_key}", "apikey": service_key}
+        # Legacy service_role keys are JWTs and go in both headers; the newer "sb_secret_..."
+        # keys are not JWTs and are only accepted in the apikey header.
+        self.headers = {"apikey": service_key}
+        if not service_key.startswith("sb_secret_"):
+            self.headers["Authorization"] = f"Bearer {service_key}"
 
     def _object(self, key: str) -> str:
         validate_key(key)

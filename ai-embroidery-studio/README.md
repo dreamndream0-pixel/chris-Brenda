@@ -6,7 +6,7 @@
 - **Gate B — 完整使用流程**：網頁上傳 SVG → 建立專案 → 設定尺寸與布料 → 編譯 → 預覽 → 匯出工廠交件包 → 下載；含權限與檔案限制。
 - **Gate C — 圖片轉向量**：PNG/JPG → 去背 → Lab 分色 → 清除雜點 → VTracer → 區域 JSON → 填針／平針；結果不理想時可重新分析（色數、背景）或逐區改針法、改色、不繡。
 - **Gate D — 針法規劃與 AI 建議**：幾何分析（厚度、中心線）＋規則引擎自動選填針／中心線平針／緞面、在不破壞重疊關係下重排以減少換色；可選的 Claude 視覺建議，一律經規則覆核。
-- **正式環境準備**：Supabase Auth（網站登入）、Supabase Storage（私有 bucket、簽名網址、瀏覽器直傳）、Postgres（同一份 migration + RLS）；部署步驟見 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+- **正式環境準備**：Supabase Auth（網站登入）、Supabase Storage（私有 bucket、簽名網址、瀏覽器直傳）、Postgres（同一份 migration + RLS）；部署步驟：免費方案見 [`docs/DEPLOY_FREE.md`](docs/DEPLOY_FREE.md)，付費／可擴充方案見 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
 ## Gate D：針法規劃與 AI 建議
 

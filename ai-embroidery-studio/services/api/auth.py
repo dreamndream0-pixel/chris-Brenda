@@ -40,11 +40,16 @@ def current_user(authorization: str | None = Header(default=None),
         raise _unauthorized()
     token = authorization[7:].strip()
     try:
-        if settings.supabase_jwks_url:
-            key = _jwks_client(settings.supabase_jwks_url).get_signing_key_from_jwt(token).key
-            claims = jwt.decode(token, key, algorithms=["ES256", "RS256"], audience="authenticated")
-        else:
+        # Supabase projects sign with either asymmetric keys (published at the JWKS URL) or the
+        # legacy shared HS256 secret; pick by the token's own header, never accept "none".
+        alg = jwt.get_unverified_header(token).get("alg")
+        if alg == "HS256" and settings.supabase_jwt_secret:
             claims = jwt.decode(token, settings.supabase_jwt_secret, algorithms=["HS256"], audience="authenticated")
+        elif alg in ("ES256", "RS256") and settings.supabase_jwks_url:
+            key = _jwks_client(settings.supabase_jwks_url).get_signing_key_from_jwt(token).key
+            claims = jwt.decode(token, key, algorithms=[alg], audience="authenticated")
+        else:
+            raise jwt.InvalidAlgorithmError(f"unsupported token algorithm {alg!r}")
     except jwt.PyJWTError as exc:
         raise _unauthorized("invalid_token") from exc
     sub = claims.get("sub")

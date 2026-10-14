@@ -226,7 +226,7 @@ def test_engine_failure_is_reported(make_client):
 def test_supabase_jwt(make_client):
     secret = "test-jwt-secret-with-enough-length-0123456789"
     client = make_client(EMB_AUTH_MODE="supabase", SUPABASE_JWT_SECRET=secret, EMB_SIGNING_SECRET="s" * 32)
-    claims = {"sub": "user-123", "aud": "authenticated", "role": "authenticated", "exp": int(time.time()) + 60}
+    claims = {"sub": "9b2f5c1e-3f4a-4d2b-8c7e-1a2b3c4d5e6f", "aud": "authenticated", "role": "authenticated", "exp": int(time.time()) + 60}
     good = jwt.encode(claims, secret, algorithm="HS256")
     assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {good}"}).status_code == 200
     bad = jwt.encode(claims, "wrong-secret-wrong-secret-wrong-secret!!", algorithm="HS256")
@@ -345,3 +345,66 @@ def test_ai_plan_endpoint(make_client, monkeypatch):
     bad = client.patch(f"/api/v1/projects/{pid}/design", headers=ALICE,
                        json={"baseRevision": 2, "regions": [{"id": "r2", "stitchType": "satin"}]})
     assert bad.status_code == 422 and bad.json()["detail"] == "satin_needs_uniform_stroke"
+
+
+def test_thread_queue_runs_jobs_and_recovers(make_client):
+    client = make_client(EMB_QUEUE_MODE="thread")
+    pid, job = upload(client, ALICE, SIMPLE_SVG)
+    for _ in range(100):
+        job = client.get(f"/api/v1/jobs/{job['jobId']}", headers=ALICE).json()
+        if job["status"] in ("ready", "failed"):
+            break
+        time.sleep(0.1)
+    assert job["status"] == "ready", job
+    from services.core import db
+    from services.core.queue import recover_jobs
+    with db.get_engine().begin() as conn:
+        uid = conn.execute(select(db.projects.c.user_id).where(db.projects.c.id == pid)).scalar_one()
+        conn.execute(insert(db.jobs).values(id=db.new_id(), project_id=pid, user_id=uid, kind="compile",
+                                            revision=1, status="compiling", progress=10))
+    assert recover_jobs() == (0, 1)
+    jobs = client.get(f"/api/v1/projects/{pid}", headers=ALICE).json()["jobs"]
+    assert any(j["errorCode"] == "server_restarted" for j in jobs)
+
+
+def test_derived_settings(monkeypatch):
+    from services.core import settings
+    monkeypatch.setenv("EMB_AUTH_MODE", "supabase")
+    monkeypatch.setenv("SUPABASE_URL", "https://proj.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "sb_secret_x")
+    monkeypatch.setenv("SPACE_HOST", "me-emb-api.hf.space")
+    monkeypatch.delenv("EMB_SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("EMB_PUBLIC_API_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_JWKS_URL", raising=False)
+    settings.get_settings.cache_clear()
+    s = settings.get_settings()
+    assert s.supabase_jwks_url == "https://proj.supabase.co/auth/v1/.well-known/jwks.json"
+    assert s.public_api_url == "https://me-emb-api.hf.space"
+    assert len(s.signing_secret) == 64
+    settings.get_settings.cache_clear()
+
+
+def test_supabase_jwt_rejects_alg_confusion(make_client):
+    secret = "test-jwt-secret-with-enough-length-0123456789"
+    client = make_client(EMB_AUTH_MODE="supabase", SUPABASE_JWT_SECRET=secret, EMB_SIGNING_SECRET="s" * 32)
+    claims = {"sub": "user-123", "aud": "authenticated", "exp": int(time.time()) + 60}
+    none_token = jwt.encode(claims, None, algorithm="none")
+    assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {none_token}"}).status_code == 401
+
+
+def test_supabase_es256_via_jwks(make_client, monkeypatch):
+    from types import SimpleNamespace
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from services.api import auth
+    key = ec.generate_private_key(ec.SECP256R1())
+    client = make_client(EMB_AUTH_MODE="supabase", SUPABASE_URL="https://proj.supabase.co", EMB_SIGNING_SECRET="s" * 32)
+    def fake_jwks(url):
+        return SimpleNamespace(get_signing_key_from_jwt=lambda t: SimpleNamespace(key=key.public_key()))
+    fake_jwks.cache_clear = lambda: None
+    monkeypatch.setattr(auth, "_jwks_client", fake_jwks)
+    claims = {"sub": "9b2f5c1e-3f4a-4d2b-8c7e-1a2b3c4d5e6f", "aud": "authenticated", "exp": int(time.time()) + 60}
+    good = jwt.encode(claims, key, algorithm="ES256", headers={"kid": "k1"})
+    assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {good}"}).status_code == 200
+    other = ec.generate_private_key(ec.SECP256R1())
+    forged = jwt.encode(claims, other, algorithm="ES256", headers={"kid": "k1"})
+    assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {forged}"}).status_code == 401

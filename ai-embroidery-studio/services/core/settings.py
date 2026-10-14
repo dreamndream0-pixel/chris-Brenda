@@ -1,6 +1,8 @@
 """Environment-driven settings shared by the API and the worker."""
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import secrets
 from dataclasses import dataclass, field
@@ -17,7 +19,7 @@ class Settings:
     data_dir: Path
     database_url: str
     redis_url: str
-    queue_mode: str            # "rq" (Redis worker) or "inline" (tests / single process)
+    queue_mode: str            # "rq" (Redis workers), "thread" (in-process) or "inline" (tests)
     auth_mode: str             # "dev" (X-Dev-User header) or "supabase" (JWT)
     supabase_jwt_secret: str
     supabase_jwks_url: str
@@ -38,18 +40,26 @@ def get_settings() -> Settings:
     data_dir = Path(_env("EMB_DATA_DIR", "data")).resolve()
     auth_mode = _env("EMB_AUTH_MODE", "dev")
     signing_secret = _env("EMB_SIGNING_SECRET")
+    supabase_url = _env("SUPABASE_URL").rstrip("/")
+    service_key = _env("SUPABASE_SERVICE_ROLE_KEY")
+    if not signing_secret and service_key:
+        # One fewer secret to manage: derive a stable HMAC key from the service key.
+        signing_secret = hmac.new(service_key.encode(), b"emb-signing-v1", hashlib.sha256).hexdigest()
     if not signing_secret:
         if auth_mode != "dev":
             raise RuntimeError("EMB_SIGNING_SECRET is required outside dev mode")
         signing_secret = secrets.token_hex(32)
-    if auth_mode == "supabase" and not (_env("SUPABASE_JWT_SECRET") or _env("SUPABASE_JWKS_URL")):
-        raise RuntimeError("supabase auth needs SUPABASE_JWT_SECRET or SUPABASE_JWKS_URL")
+    jwks_url = _env("SUPABASE_JWKS_URL") or (f"{supabase_url}/auth/v1/.well-known/jwks.json" if supabase_url else "")
+    if auth_mode == "supabase" and not (_env("SUPABASE_JWT_SECRET") or jwks_url):
+        raise RuntimeError("supabase auth needs SUPABASE_URL, SUPABASE_JWKS_URL or SUPABASE_JWT_SECRET")
+    # Hugging Face Spaces sets SPACE_HOST (e.g. "user-space.hf.space").
+    default_public = f"https://{_env('SPACE_HOST')}" if _env("SPACE_HOST") else "http://localhost:8000"
     if auth_mode not in ("dev", "supabase"):
         raise RuntimeError(f"unknown EMB_AUTH_MODE {auth_mode!r}")
     storage_backend = _env("EMB_STORAGE", "local")
     if storage_backend not in ("local", "supabase"):
         raise RuntimeError(f"unknown EMB_STORAGE {storage_backend!r}")
-    if storage_backend == "supabase" and not (_env("SUPABASE_URL") and _env("SUPABASE_SERVICE_ROLE_KEY")):
+    if storage_backend == "supabase" and not (supabase_url and service_key):
         raise RuntimeError("EMB_STORAGE=supabase needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY")
     return Settings(
         data_dir=data_dir,
@@ -58,12 +68,12 @@ def get_settings() -> Settings:
         queue_mode=_env("EMB_QUEUE_MODE", "rq"),
         auth_mode=auth_mode,
         supabase_jwt_secret=_env("SUPABASE_JWT_SECRET"),
-        supabase_jwks_url=_env("SUPABASE_JWKS_URL"),
+        supabase_jwks_url=jwks_url,
         signing_secret=signing_secret,
-        public_api_url=_env("EMB_PUBLIC_API_URL", "http://localhost:8000").rstrip("/"),
+        public_api_url=_env("EMB_PUBLIC_API_URL", default_public).rstrip("/"),
         cors_origins=[o for o in _env("EMB_CORS_ORIGINS", "http://localhost:3000").split(",") if o],
         storage_backend=storage_backend,
-        supabase_url=_env("SUPABASE_URL").rstrip("/"),
-        supabase_service_key=_env("SUPABASE_SERVICE_ROLE_KEY"),
+        supabase_url=supabase_url,
+        supabase_service_key=service_key,
         storage_bucket=_env("EMB_STORAGE_BUCKET", "embroidery"),
     )

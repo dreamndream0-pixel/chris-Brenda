@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.core.db import init_db
+from services.core.queue import recover_jobs
 from services.core.settings import get_settings
 
 from .routers import projects
@@ -15,6 +16,9 @@ from .routers import projects
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    if get_settings().queue_mode == "thread":
+        requeued, failed = recover_jobs()
+        print(f"job recovery: requeued={requeued} interrupted={failed}", flush=True)
     yield
 
 
