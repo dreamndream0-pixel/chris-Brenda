@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:inkstitch="http://inkstitch.org/namespace" width="50mm" height="30mm" viewBox="0 0 50 30">
+  <metadata><inkstitch:inkstitch_svg_version>4</inkstitch:inkstitch_svg_version></metadata>
   <g id="layer1" inkscape:groupmode="layer" inkscape:label="two-color">
     <rect id="r1" x="5" y="5" width="20" height="20" style="fill:#c0392b;stroke:none"
       inkstitch:angle="0" inkstitch:row_spacing_mm="0.4" inkstitch:fill_underlay="True"/>

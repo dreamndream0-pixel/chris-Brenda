@@ -88,3 +88,26 @@ def test_child_env_drops_secrets(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     env = engine._child_env(tmp_path)
     assert "OPENAI_API_KEY" not in env and env["HOME"] == str(tmp_path)
+
+
+def test_svg_without_version_is_rejected(monkeypatch, tmp_path):
+    svg = tmp_path / "noversion.svg"
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>')
+    _use_fake(monkeypatch, "fail", "-")
+    with pytest.raises(engine.EngineError) as e:
+        engine.compile_svg(svg, tmp_path / "out")
+    assert e.value.code == "unsupported_svg_version"
+
+
+def test_timeout_kills_child_processes(monkeypatch, tmp_path):
+    # A wrapper shell whose child keeps running: both must be gone after the timeout.
+    marker = tmp_path / "alive"
+    script = tmp_path / "wrap.sh"
+    script.write_text(f"#!/bin/sh\n(sleep 3; touch {marker}) &\nwait\n")
+    script.chmod(0o755)
+    monkeypatch.setenv(engine.INKSTITCH_CMD_ENV, str(script))
+    with pytest.raises(engine.EngineError):
+        engine.compile_svg(FIXTURE, tmp_path / "out", timeout_s=1)
+    import time
+    time.sleep(3)
+    assert not marker.exists()

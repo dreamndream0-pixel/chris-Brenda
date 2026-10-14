@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-venv python3-wxgtk4.0 git ca-certificates fonts-dejavu-core \
+        python3.12 python3.12-venv python3-wxgtk4.0 xvfb xauth git ca-certificates fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Pinned Ink/Stitch source: the build fails if the tag no longer points at the expected commit.
@@ -32,8 +32,9 @@ COPY fixtures/ fixtures/
 COPY tools/ tools/
 COPY tests/ tests/
 
+# wxPython needs an X display even for CLI runs, so each job gets a throwaway Xvfb.
 ENV PATH=/opt/venv/bin:$PATH \
-    INKSTITCH_CMD="/opt/venv/bin/python /opt/inkstitch/inkstitch.py"
+    INKSTITCH_CMD="xvfb-run -a /opt/venv/bin/python /opt/inkstitch/inkstitch.py"
 
 USER worker
 # Smoke test = Gate A. Run the container with --network=none and CPU/memory limits.

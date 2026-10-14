@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import zipfile
@@ -20,11 +22,15 @@ from pathlib import Path
 # or the path of a packaged "inkstitch" binary. Set in the worker image.
 INKSTITCH_CMD_ENV = "INKSTITCH_CMD"
 
-DEFAULT_TIMEOUT_S = 180
+DEFAULT_TIMEOUT_S = int(os.environ.get("INKSTITCH_TIMEOUT_S", "180"))
 MAX_ZIP_BYTES = 50 * 1024 * 1024
 MAX_MEMBER_BYTES = 20 * 1024 * 1024
 ALLOWED_SUFFIXES = {".dst", ".pes", ".txt", ".svg"}
 OUTPUT_BASENAME = "design"
+# Ink/Stitch shows a blocking "update document?" dialog for SVGs without this
+# version tag, which hangs a headless worker. Every compiled SVG must carry it.
+INKSTITCH_SVG_VERSION = 4
+_SVG_VERSION_RE = re.compile(rb"<(?:\w+:)?inkstitch_svg_version>\s*(\d+)\s*<")
 
 
 class EngineError(Exception):
@@ -59,6 +65,29 @@ def build_zip_args(svg_path: Path, formats: tuple[str, ...] = ("dst", "pes")) ->
     args.append("--format-threadlist=True")
     args.append(str(svg_path))
     return args
+
+
+def check_svg_version(svg_bytes: bytes) -> None:
+    match = _SVG_VERSION_RE.search(svg_bytes)
+    if not match or int(match.group(1)) != INKSTITCH_SVG_VERSION:
+        raise EngineError(
+            "unsupported_svg_version",
+            f"SVG must contain <inkstitch:inkstitch_svg_version>{INKSTITCH_SVG_VERSION}</...> metadata",
+        )
+
+
+def _run(argv: list[str], cwd: Path, env: dict[str, str], timeout_s: int) -> subprocess.CompletedProcess:
+    """Run in its own process group so a timeout also kills wrappers' children (xvfb-run, Xvfb)."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            shell=False, start_new_session=True)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def _child_env(job_dir: Path) -> dict[str, str]:
@@ -114,19 +143,12 @@ def compile_svg(svg_path: Path, out_dir: Path, timeout_s: int = DEFAULT_TIMEOUT_
     with tempfile.TemporaryDirectory(prefix="inkstitch-job-") as tmp:
         job_dir = Path(tmp)
         # Copy the input under a fixed name so user file names never reach argv.
+        svg_bytes = svg_path.read_bytes()
+        check_svg_version(svg_bytes)
         local_svg = job_dir / "design.svg"
-        shutil.copyfile(svg_path, local_svg)
+        local_svg.write_bytes(svg_bytes)
         try:
-            proc = subprocess.run(
-                [*cmd, *build_zip_args(local_svg, formats)],
-                cwd=job_dir,
-                env=_child_env(job_dir),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=timeout_s,
-                shell=False,
-                check=False,
-            )
+            proc = _run([*cmd, *build_zip_args(local_svg, formats)], job_dir, _child_env(job_dir), timeout_s)
         except subprocess.TimeoutExpired as exc:
             raise EngineError("engine_timeout", f"Ink/Stitch exceeded {timeout_s}s") from exc
 
