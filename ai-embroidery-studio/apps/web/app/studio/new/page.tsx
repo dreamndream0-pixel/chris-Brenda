@@ -50,7 +50,7 @@ export default function NewProjectPage() {
         heightMm: lock ? undefined : height, lockAspect: lock, fabricPreset: fabric });
       setStatus("上傳檔案");
       const up = await api.uploadUrl(project.id, file);
-      await api.putUpload(up.uploadUrl, file);
+      await api.putUpload(up.uploadUrl, file, up.headers);
       const opts = rasterFile ? toAnalyzeOptions(raster) : {};
       const job = await waitForJob(await api.analyze(project.id, up.uploadId, opts), j => setStatus(JOB_STATUS[j.status] ?? j.status));
       if (job.status === "failed") { setError(errorMessage(job.errorCode)); return; }

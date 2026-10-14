@@ -196,15 +196,20 @@ def import_svg(data: bytes, width_mm: float, fabric: str = "woven_cotton",
         except ValueError:
             fill_opacity = 1.0
         if fill and fill_opacity > 0:
-            raw.append(("fill", fill, path, el.values.get("fill-rule", "nonzero")))
+            raw.append(("fill", fill, path, el.values.get("fill-rule", "nonzero"), None))
         stroke = _hex(el.stroke)
         if stroke and (el.stroke_width or 0) > 0:
-            raw.append(("running", stroke, path, None))
+            raw.append(("running", stroke, path, None, float(el.stroke_width)))
 
     if not raw:
         raise ImportError_("no_embroiderable_shapes", "SVG contains no visible filled or stroked shapes")
 
-    boxes = [r[2].bbox() for r in raw]
+    def visual_box(item):
+        x0_, y0_, x1_, y1_ = item[2].bbox()
+        h = (item[4] or 0) / 2  # strokes cover half their width on each side of the path
+        return (x0_ - h, y0_ - h, x1_ + h, y1_ + h)
+
+    boxes = [visual_box(r) for r in raw]
     x0 = min(b[0] for b in boxes)
     y0 = min(b[1] for b in boxes)
     bw = max(b[2] for b in boxes) - x0
@@ -215,7 +220,7 @@ def import_svg(data: bytes, width_mm: float, fabric: str = "woven_cotton",
     palette: dict[str, str] = {}
     regions = []
     shift = Matrix(f"translate({-x0},{-y0})")
-    for i, (kind, hex_color, path, rule) in enumerate(raw, start=1):
+    for i, (kind, hex_color, path, rule, stroke_w) in enumerate(raw, start=1):
         if hex_color not in palette:
             palette[hex_color] = f"c{len(palette) + 1}"
         moved = path * shift
@@ -223,7 +228,7 @@ def import_svg(data: bytes, width_mm: float, fabric: str = "woven_cotton",
         bx0, by0, bx1, by1 = moved.bbox()
         regions.append({
             "id": f"r{i}",
-            "name": f"{'填針' if kind == 'fill' else '平針'} {i}",
+            "name": f"區域 {i}",
             "svgPath": moved.d(),
             "fillRule": rule if rule in ("nonzero", "evenodd") else "nonzero",
             "colorId": palette[hex_color],
@@ -232,6 +237,8 @@ def import_svg(data: bytes, width_mm: float, fabric: str = "woven_cotton",
             "params": default_params(fabric, kind),
             "bbox": [round(float(v), 4) for v in (bx0, by0, bx1, by1)],
             "warnings": [],
+            "shape": "area" if kind == "fill" else "line",
+            **({"strokeWidthUnits": round(stroke_w, 4)} if stroke_w else {}),
         })
     if len(palette) > MAX_COLORS:
         raise ImportError_("too_many_colors", f"more than {MAX_COLORS} colours; simplify the artwork")
@@ -269,5 +276,8 @@ def annotate_warnings(design: dict) -> dict:
             warns.append("narrow_fill_under_1mm")
         if max(w, h) < 0.5:
             warns.append("tiny_region")
+        if "metrics" in region:
+            from .rules import region_warnings  # rules depends on geometry, not on this module
+            warns += region_warnings(region, design)
         region["warnings"] = warns
     return design

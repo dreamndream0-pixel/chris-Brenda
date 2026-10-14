@@ -34,7 +34,7 @@ COPY tests/ tests/
 
 # wxPython needs an X display even for CLI runs, so each job gets a throwaway Xvfb.
 ENV PATH=/opt/venv/bin:$PATH \
-    INKSTITCH_CMD="xvfb-run -a /opt/venv/bin/python /opt/inkstitch/inkstitch.py"
+    INKSTITCH_CMD="xvfb-run -a /opt/venv/bin/python /app/services/worker/inkstitch_launcher.py /opt/inkstitch"
 
 USER worker
 # Default command = Gate A smoke test (run with --network=none). docker-compose.yml

@@ -11,24 +11,28 @@ FABRIC_PRESETS: dict[str, dict] = {
         "fill": {"fillAngleDeg": 45, "rowSpacingMm": 0.40, "maxStitchLengthMm": 3.0,
                  "underlay": True, "pullCompensationMm": 0.10},
         "running": {"runningStitchLengthMm": 2.0, "repeats": 1},
+        "satin": {"zigzagSpacingMm": 0.40, "pullCompensationMm": 0.20, "underlay": True},
     },
     "knit_cotton": {
         "label": "針織棉",
         "fill": {"fillAngleDeg": 45, "rowSpacingMm": 0.40, "maxStitchLengthMm": 3.0,
                  "underlay": True, "pullCompensationMm": 0.25},
         "running": {"runningStitchLengthMm": 2.2, "repeats": 1},
+        "satin": {"zigzagSpacingMm": 0.40, "pullCompensationMm": 0.35, "underlay": True},
     },
     "canvas": {
         "label": "帆布",
         "fill": {"fillAngleDeg": 45, "rowSpacingMm": 0.38, "maxStitchLengthMm": 3.5,
                  "underlay": True, "pullCompensationMm": 0.10},
         "running": {"runningStitchLengthMm": 2.5, "repeats": 1},
+        "satin": {"zigzagSpacingMm": 0.38, "pullCompensationMm": 0.20, "underlay": True},
     },
     "other": {
         "label": "其他",
         "fill": {"fillAngleDeg": 45, "rowSpacingMm": 0.40, "maxStitchLengthMm": 3.0,
                  "underlay": True, "pullCompensationMm": 0.15},
         "running": {"runningStitchLengthMm": 2.0, "repeats": 1},
+        "satin": {"zigzagSpacingMm": 0.40, "pullCompensationMm": 0.25, "underlay": True},
     },
 }
 
@@ -44,8 +48,17 @@ PARAM_LIMITS: dict[str, dict[str, tuple[float, float]]] = {
         "runningStitchLengthMm": (1.0, 5.0),
         "repeats": (1, 5),
     },
+    "satin": {
+        "zigzagSpacingMm": (0.25, 1.0),
+        "pullCompensationMm": (0.0, 0.8),
+    },
 }
-BOOL_PARAMS = {"fill": {"underlay"}, "running": set()}
+BOOL_PARAMS = {"fill": {"underlay"}, "running": set(), "satin": {"underlay"}}
+STITCH_TYPES = ("fill", "running", "satin")
+
+# Satin columns: narrower is not stitchable, wider gives long loose stitches (spec §6 stage 4).
+SATIN_WIDTH_MM = (1.0, 7.0)
+THIN_RUNNING_MM = 1.2
 INT_PARAMS = {"repeats"}
 
 SIZE_LIMITS_MM = (5.0, 300.0)

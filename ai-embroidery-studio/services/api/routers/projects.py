@@ -4,9 +4,9 @@ from __future__ import annotations
 import copy
 import json
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, insert, select, update
@@ -18,10 +18,14 @@ from services.core.settings import get_settings
 from services.core.signing import sign, verify
 from services.core.storage import get_storage, object_key
 from services.worker.fabrics import FABRIC_PRESETS, SIZE_LIMITS_MM, default_params
+from services.worker.ai_plan import ai_enabled, ai_model
+from services.worker.rules import allowed, ensure_metrics, set_stitch
 from services.worker.svg_import import annotate_warnings
 from services.worker.tasks import save_revision
 
 router = APIRouter(prefix="/api/v1")
+UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+Id = Annotated[str, Path(pattern=UUID_PATTERN)]  # malformed ids are rejected before any query
 MIN_MM, MAX_MM = SIZE_LIMITS_MM
 FabricPreset = str
 ALLOWED_UPLOAD_TYPES = {"image/svg+xml": ".svg", "image/png": ".png", "image/jpeg": ".jpg"}
@@ -49,7 +53,7 @@ class UploadRequest(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    uploadId: str
+    uploadId: str = Field(pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
     colors: int | None = Field(default=None, ge=1, le=6)       # raster only; None = auto
     removeBackground: bool = True                              # raster only
     backgroundHex: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
@@ -63,7 +67,7 @@ class SizeMm(BaseModel):
 
 class RegionPatch(BaseModel):
     id: str
-    stitchType: Literal["fill", "running"] | None = None
+    stitchType: Literal["fill", "running", "satin"] | None = None
     colorId: str | None = None
     hidden: bool | None = None
 
@@ -88,7 +92,7 @@ class RevisionRequest(BaseModel):
 
 # ---------- helpers ----------
 
-def _owned_project(conn, project_id: str, user_id: str) -> dict:
+def _owned_project(conn, project_id: Id, user_id: str) -> dict:
     row = conn.execute(select(db.projects).where(db.projects.c.id == project_id,
                                                  db.projects.c.user_id == user_id)).mappings().first()
     if row is None:  # same answer for "missing" and "not yours": no existence leak
@@ -117,7 +121,7 @@ def _job_out(j: dict) -> dict:
             "errorMessage": j["error_message"], "result": j["result"]}
 
 
-def _create_job(user_id: str, project_id: str, kind: str, revision: int | None, params: dict | None = None) -> dict:
+def _create_job(user_id: str, project_id: Id, kind: str, revision: int | None, params: dict | None = None) -> dict:
     with db.get_engine().begin() as conn:
         active = conn.execute(select(func.count()).select_from(db.jobs).where(
             db.jobs.c.user_id == user_id, db.jobs.c.status.in_(db.ACTIVE_JOB_STATUSES))).scalar_one()
@@ -136,7 +140,7 @@ def _create_job(user_id: str, project_id: str, kind: str, revision: int | None, 
         return _job_out(conn.execute(select(db.jobs).where(db.jobs.c.id == job_id)).mappings().one())
 
 
-def _revision_exists(conn, project_id: str, revision: int) -> None:
+def _revision_exists(conn, project_id: Id, revision: int) -> None:
     hit = conn.execute(select(db.revisions.c.id).where(db.revisions.c.project_id == project_id,
                                                        db.revisions.c.revision == revision)).first()
     if hit is None:
@@ -144,6 +148,26 @@ def _revision_exists(conn, project_id: str, revision: int) -> None:
 
 
 # ---------- projects ----------
+
+@router.get("/config")
+def get_config():
+    """What the front end may offer (no secrets)."""
+    settings = get_settings()
+    return {"aiEnabled": ai_enabled(), "aiModel": ai_model() if ai_enabled() else None,
+            "authMode": settings.auth_mode}
+
+
+@router.post("/projects/{project_id}/ai-plan", status_code=202)
+def ai_plan(project_id: Id, body: RevisionRequest, user_id: str = Depends(current_user)):
+    """Ask Claude for stitch suggestions; rules review them and a new revision is saved."""
+    if not ai_enabled():
+        raise HTTPException(409, "ai_not_configured")
+    with db.get_engine().connect() as conn:
+        p = _owned_project(conn, project_id, user_id)
+        if body.revision != p["current_revision"]:
+            raise HTTPException(409, "revision_conflict")
+    return _create_job(user_id, project_id, "ai_plan", body.revision)
+
 
 @router.get("/fabrics")
 def list_fabrics():
@@ -171,7 +195,7 @@ def list_projects(user_id: str = Depends(current_user)):
 
 
 @router.get("/projects/{project_id}")
-def get_project(project_id: str, user_id: str = Depends(current_user)):
+def get_project(project_id: Id, user_id: str = Depends(current_user)):
     with db.get_engine().connect() as conn:
         p = _owned_project(conn, project_id, user_id)
         design = None
@@ -185,9 +209,14 @@ def get_project(project_id: str, user_id: str = Depends(current_user)):
                             .order_by(db.artifacts.c.revision.desc())).mappings().all()
         jobs = conn.execute(select(db.jobs).where(db.jobs.c.project_id == project_id)
                             .order_by(db.jobs.c.created_at.desc()).limit(10)).mappings().all()
+    allowed_map = {}
+    if design and all("metrics" in r for r in design["regions"]):
+        allowed_map = {r["id"]: {st: allowed(r, design, st) for st in ("fill", "running", "satin")}
+                       for r in design["regions"]}
     return {
         "project": _project_out(p),
         "design": design,
+        "allowedStitches": allowed_map,  # region id -> stitch -> null (ok) or reason code
         "artifacts": [{"id": a["id"], "kind": a["kind"], "revision": a["revision"], "sizeBytes": a["size_bytes"],
                        "createdAt": a["created_at"].isoformat()} for a in arts if a["kind"] in DOWNLOADABLE],
         "jobs": [_job_out(dict(j)) for j in jobs],
@@ -197,7 +226,7 @@ def get_project(project_id: str, user_id: str = Depends(current_user)):
 # ---------- upload ----------
 
 @router.post("/projects/{project_id}/upload-url")
-def create_upload_url(project_id: str, body: UploadRequest, user_id: str = Depends(current_user)):
+def create_upload_url(project_id: Id, body: UploadRequest, user_id: str = Depends(current_user)):
     settings = get_settings()
     suffix = "." + body.filename.lower().rsplit(".", 1)[-1] if "." in body.filename else ""
     if body.contentType not in ALLOWED_UPLOAD_TYPES or ALLOWED_SUFFIXES.get(suffix) != body.contentType:
@@ -212,13 +241,16 @@ def create_upload_url(project_id: str, body: UploadRequest, user_id: str = Depen
         conn.execute(insert(db.uploads).values(id=upload_id, project_id=project_id, user_id=user_id,
                                                filename=safe_name, content_type=body.contentType,
                                                declared_size=body.sizeBytes, storage_key=key, status="pending"))
+    direct = get_storage().signed_upload(key, body.contentType)
+    if direct:  # Supabase: the browser uploads straight into the private bucket
+        return {"uploadId": upload_id, "method": "PUT", "uploadUrl": direct["url"], "headers": direct["headers"]}
     token, exp = sign("upload", upload_id, ttl_s=600)
-    return {"uploadId": upload_id, "method": "PUT", "expiresAt": exp,
+    return {"uploadId": upload_id, "method": "PUT", "expiresAt": exp, "headers": {},
             "uploadUrl": f"{settings.public_api_url}/api/v1/uploads/{upload_id}?token={token}"}
 
 
 @router.put("/uploads/{upload_id}", status_code=204)
-async def receive_upload(upload_id: str, token: str, request: Request):
+async def receive_upload(upload_id: Id, token: str, request: Request):
     """Local stand-in for a Storage signed upload URL: the token is the only credential."""
     claims = verify(token, "upload")
     if not claims or claims["s"] != upload_id:
@@ -242,12 +274,14 @@ async def receive_upload(upload_id: str, token: str, request: Request):
 
 
 @router.post("/projects/{project_id}/analyze", status_code=202)
-def analyze(project_id: str, body: AnalyzeRequest, user_id: str = Depends(current_user)):
+def analyze(project_id: Id, body: AnalyzeRequest, user_id: str = Depends(current_user)):
     with db.get_engine().connect() as conn:
         p = _owned_project(conn, project_id, user_id)
         up = conn.execute(select(db.uploads).where(db.uploads.c.id == body.uploadId,
                                                    db.uploads.c.project_id == project_id)).mappings().first()
-    if up is None or up["status"] not in ("uploaded", "used"):
+    # "pending" is allowed: with direct-to-storage uploads the API never sees the bytes;
+    # the worker checks the object exists and enforces the size limit.
+    if up is None:
         raise HTTPException(409, "upload_not_ready")
     rerun = up["status"] == "used"
     params = {"uploadId": body.uploadId, "widthMm": body.widthMm or p["width_mm"],
@@ -260,7 +294,7 @@ def analyze(project_id: str, body: AnalyzeRequest, user_id: str = Depends(curren
 # ---------- design revisions ----------
 
 @router.patch("/projects/{project_id}/design")
-def patch_design(project_id: str, body: DesignPatch, user_id: str = Depends(current_user)):
+def patch_design(project_id: Id, body: DesignPatch, user_id: str = Depends(current_user)):
     with db.get_engine().begin() as conn:
         p = _owned_project(conn, project_id, user_id)
         if body.baseRevision != p["current_revision"] or not p["current_revision"]:
@@ -302,8 +336,12 @@ def patch_design(project_id: str, body: DesignPatch, user_id: str = Depends(curr
                         raise HTTPException(422, "unknown_color")
                     region["colorId"] = rp.colorId
                 if rp.stitchType is not None and rp.stitchType != region["stitchType"]:
-                    region["stitchType"] = rp.stitchType
-                    region["params"] = default_params(design["fabricPreset"], rp.stitchType)
+                    ensure_metrics(design)
+                    blocker = allowed(region, design, rp.stitchType)
+                    if blocker:
+                        raise HTTPException(422, blocker)
+                    set_stitch(region, design, rp.stitchType)
+                    region.setdefault("plan", {})["manual"] = True
                 if rp.hidden is not None:
                     region["hidden"] = rp.hidden
             if all(r.get("hidden") for r in design["regions"]):
@@ -318,7 +356,7 @@ def patch_design(project_id: str, body: DesignPatch, user_id: str = Depends(curr
 # ---------- compile / stitches / export ----------
 
 @router.post("/projects/{project_id}/compile", status_code=202)
-def compile_revision(project_id: str, body: RevisionRequest, user_id: str = Depends(current_user)):
+def compile_revision(project_id: Id, body: RevisionRequest, user_id: str = Depends(current_user)):
     with db.get_engine().connect() as conn:
         _owned_project(conn, project_id, user_id)
         _revision_exists(conn, project_id, body.revision)
@@ -326,7 +364,7 @@ def compile_revision(project_id: str, body: RevisionRequest, user_id: str = Depe
 
 
 @router.get("/projects/{project_id}/stitches")
-def get_stitches(project_id: str, revision: int | None = None, user_id: str = Depends(current_user)):
+def get_stitches(project_id: Id, revision: int | None = None, user_id: str = Depends(current_user)):
     with db.get_engine().connect() as conn:
         p = _owned_project(conn, project_id, user_id)
         revision = revision or p["compiled_revision"]
@@ -340,7 +378,7 @@ def get_stitches(project_id: str, revision: int | None = None, user_id: str = De
 
 
 @router.post("/projects/{project_id}/exports", status_code=202)
-def create_export(project_id: str, body: RevisionRequest, user_id: str = Depends(current_user)):
+def create_export(project_id: Id, body: RevisionRequest, user_id: str = Depends(current_user)):
     with db.get_engine().connect() as conn:
         _owned_project(conn, project_id, user_id)
         compiled = conn.execute(select(db.artifacts.c.id).where(
@@ -352,7 +390,7 @@ def create_export(project_id: str, body: RevisionRequest, user_id: str = Depends
 
 
 @router.get("/projects/{project_id}/exports/{artifact_id}")
-def get_download_url(project_id: str, artifact_id: str, user_id: str = Depends(current_user)):
+def get_download_url(project_id: Id, artifact_id: Id, user_id: str = Depends(current_user)):
     with db.get_engine().connect() as conn:
         _owned_project(conn, project_id, user_id)
         art = conn.execute(select(db.artifacts).where(db.artifacts.c.id == artifact_id,
@@ -360,23 +398,31 @@ def get_download_url(project_id: str, artifact_id: str, user_id: str = Depends(c
     if art is None or art["kind"] not in DOWNLOADABLE:
         raise HTTPException(404, "artifact_not_found")
     settings = get_settings()
+    filename = art["storage_key"].rsplit("/", 1)[-1]
+    direct = get_storage().signed_download_url(art["storage_key"], filename, settings.signed_url_ttl_s)
+    if direct:
+        return {"url": direct}
     token, exp = sign("download", art["id"], ttl_s=settings.signed_url_ttl_s)
     return {"url": f"{settings.public_api_url}/api/v1/files/{token}", "expiresAt": exp}
 
 
 @router.get("/projects/{project_id}/previews")
-def get_previews(project_id: str, revision: int, user_id: str = Depends(current_user)):
+def get_previews(project_id: Id, revision: int, user_id: str = Depends(current_user)):
     """Short-lived URLs for the re-encoded original and the colour-separation preview (raster uploads)."""
     with db.get_engine().connect() as conn:
         _owned_project(conn, project_id, user_id)
         # Previews are made by the analysis that created the geometry; later edit revisions reuse them.
-        arts = conn.execute(select(db.artifacts.c.id, db.artifacts.c.kind).where(
+        arts = conn.execute(select(db.artifacts.c.id, db.artifacts.c.kind, db.artifacts.c.storage_key).where(
             db.artifacts.c.project_id == project_id, db.artifacts.c.revision <= revision,
             db.artifacts.c.kind.in_(PREVIEWABLE)).order_by(db.artifacts.c.revision.desc())).all()
     settings = get_settings()
     out = {}
-    for art_id, kind in arts:
+    for art_id, kind, key in arts:
         if kind in out:
+            continue
+        direct = get_storage().signed_download_url(key, None, settings.signed_url_ttl_s)
+        if direct:
+            out[kind] = direct
             continue
         token, _ = sign("preview", art_id, ttl_s=settings.signed_url_ttl_s)
         out[kind] = f"{settings.public_api_url}/api/v1/files/{token}"
@@ -408,7 +454,7 @@ def download(token: str):
 # ---------- jobs ----------
 
 @router.get("/jobs/{job_id}")
-def get_job(job_id: str, user_id: str = Depends(current_user)):
+def get_job(job_id: Id, user_id: str = Depends(current_user)):
     with db.get_engine().connect() as conn:
         job = conn.execute(select(db.jobs).where(db.jobs.c.id == job_id, db.jobs.c.user_id == user_id)).mappings().first()
     if job is None:

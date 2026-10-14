@@ -7,6 +7,7 @@ rq==2.12.0
 redis==8.1.0
 pyjwt[crypto]==2.15.1
 httpx==0.28.1
+psycopg[binary]==3.3.6
 lxml==5.4.0
 svgelements==1.9.6
 pyembroidery==1.5.1
@@ -14,4 +15,5 @@ numpy==2.2.6
 pillow==12.3.0
 opencv-python-headless==4.12.0.88
 vtracer==0.6.15
+anthropic==1.9.0
 pytest==9.1.1

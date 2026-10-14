@@ -7,6 +7,7 @@ allow-listed files from the ZIP it writes to stdout.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import shlex
@@ -22,7 +23,8 @@ from pathlib import Path
 # or the path of a packaged "inkstitch" binary. Set in the worker image.
 INKSTITCH_CMD_ENV = "INKSTITCH_CMD"
 
-DEFAULT_TIMEOUT_S = int(os.environ.get("INKSTITCH_TIMEOUT_S", "180"))
+DEFAULT_TIMEOUT_S = int(os.environ.get("INKSTITCH_TIMEOUT_S", "300"))
+CACHE_SIZE_MB = 20  # per cache dir (per project); Ink/Stitch default is 100
 MAX_ZIP_BYTES = 50 * 1024 * 1024
 MAX_MEMBER_BYTES = 20 * 1024 * 1024
 ALLOWED_SUFFIXES = {".dst", ".pes", ".txt", ".svg"}
@@ -90,12 +92,23 @@ def _run(argv: list[str], cwd: Path, env: dict[str, str], timeout_s: int) -> sub
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
-def _child_env(job_dir: Path) -> dict[str, str]:
+def prepare_cache_dir(cache_dir: Path) -> Path:
+    """Ink/Stitch keeps its stitch-plan cache under $XDG_CONFIG_HOME/inkstitch. Reusing one directory
+    per project lets a recompile skip regions whose geometry and parameters did not change."""
+    settings = cache_dir / "inkstitch" / "settings.json"
+    if not settings.exists():
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"cache_size": CACHE_SIZE_MB}))
+    return cache_dir
+
+
+def _child_env(job_dir: Path, cache_dir: Path | None = None) -> dict[str, str]:
     # Minimal environment: no inherited secrets (API keys, DB URLs) reach the engine.
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "HOME": str(job_dir),
         "TMPDIR": str(job_dir),
+        "XDG_CONFIG_HOME": str(cache_dir or job_dir),
         "LANG": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
@@ -135,7 +148,7 @@ def extract_allowed(zip_bytes: bytes, out_dir: Path) -> dict[str, Path]:
 
 
 def compile_svg(svg_path: Path, out_dir: Path, timeout_s: int = DEFAULT_TIMEOUT_S,
-                formats: tuple[str, ...] = ("dst", "pes")) -> CompileResult:
+                formats: tuple[str, ...] = ("dst", "pes"), cache_dir: Path | None = None) -> CompileResult:
     """Compile an Ink/Stitch-parameterised SVG into embroidery files in `out_dir`."""
     cmd = inkstitch_command()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +161,8 @@ def compile_svg(svg_path: Path, out_dir: Path, timeout_s: int = DEFAULT_TIMEOUT_
         local_svg = job_dir / "design.svg"
         local_svg.write_bytes(svg_bytes)
         try:
-            proc = _run([*cmd, *build_zip_args(local_svg, formats)], job_dir, _child_env(job_dir), timeout_s)
+            proc = _run([*cmd, *build_zip_args(local_svg, formats)], job_dir,
+                        _child_env(job_dir, prepare_cache_dir(cache_dir) if cache_dir else None), timeout_s)
         except subprocess.TimeoutExpired as exc:
             raise EngineError("engine_timeout", f"Ink/Stitch exceeded {timeout_s}s") from exc
 

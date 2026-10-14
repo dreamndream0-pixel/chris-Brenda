@@ -1,22 +1,31 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getDevUser, setDevUser } from "@/lib/api";
+import { AUTH_MODE, currentUserLabel, setDevUser, signOut, supabase } from "@/lib/auth";
 
-// Development login: the API runs with EMB_AUTH_MODE=dev and trusts X-Dev-User.
-// Supabase Auth replaces this before any real deployment.
 export default function AuthBar() {
   const [user, setUser] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
   const [draft, setDraft] = useState("");
-  useEffect(() => setUser(getDevUser()), []);
 
+  useEffect(() => {
+    currentUserLabel().then(u => { setUser(u); setReady(true); });
+    if (AUTH_MODE !== "supabase") return;
+    const { data } = supabase().auth.onAuthStateChange((_event, session) => setUser(session?.user.email ?? null));
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  if (!ready) return <div className="h-8" />;
   if (user) {
     return (
       <div className="flex items-center gap-2 text-sm">
-        <span className="text-muted">使用者</span><strong>{user}</strong>
-        <button className="btn py-1" onClick={() => { setDevUser(null); location.reload(); }}>登出</button>
+        <span className="text-muted">使用者</span><strong className="max-w-48 truncate">{user}</strong>
+        <button className="btn py-1" onClick={async () => { await signOut(); location.assign("/studio"); }}>登出</button>
       </div>
     );
   }
+  if (AUTH_MODE === "supabase") return <Link href="/login" className="btn btn-primary py-1 text-sm">登入</Link>;
+  // Development login: the API runs with EMB_AUTH_MODE=dev and trusts X-Dev-User.
   return (
     <form className="flex items-center gap-2 text-sm" onSubmit={e => {
       e.preventDefault();

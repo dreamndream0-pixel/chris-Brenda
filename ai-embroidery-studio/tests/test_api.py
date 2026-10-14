@@ -119,6 +119,11 @@ def test_other_user_cannot_access(client):
     assert client.get(f"/api/v1/projects/{pid}/exports/{art['id']}", headers=BOB).status_code == 404
 
 
+def test_malformed_ids_rejected(client):
+    assert client.get("/api/v1/projects/not-a-uuid", headers=ALICE).status_code == 422
+    assert client.get("/api/v1/jobs/1;drop", headers=ALICE).status_code == 422
+
+
 def test_requires_auth(client):
     assert client.get("/api/v1/projects").status_code == 401
     assert client.get("/api/v1/projects", headers={"X-Dev-User": "bad name!"}).status_code == 401
@@ -309,3 +314,34 @@ def test_expected_extent_follows_visible_regions():
     design = {"geometry": {"viewBox": [0, 0, 100, 50]}, "sizeMm": {"width": 50, "height": 25},
               "regions": [{"bbox": [0, 0, 60, 50]}, {"bbox": [60, 0, 100, 50], "hidden": True}]}
     assert expected_extent_mm(design) == (30.0, 25.0)
+
+
+def test_ai_plan_endpoint(make_client, monkeypatch):
+    client = make_client()
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("EMB_AI_ENABLED", raising=False)
+    assert client.get("/api/v1/config").json()["aiEnabled"] is False
+    pid, _ = upload(client, ALICE, SIMPLE_SVG)
+    assert client.post(f"/api/v1/projects/{pid}/ai-plan", json={"revision": 1}, headers=ALICE).status_code == 409
+
+    monkeypatch.setenv("EMB_AI_ENABLED", "1")
+    from services.worker import tasks
+
+    def fake_suggest(design):
+        return {"regions": {"r1": {"stitch": "running", "confidence": 0.9, "needsReview": False, "reason": "外框"},
+                            "r2": {"stitch": "satin", "confidence": 0.9, "needsReview": False, "reason": "x"}},
+                "risks": [{"code": "other", "regionIds": [], "message": "注意"}], "summary": "ok",
+                "model": "claude-opus-5-5", "usage": {"inputTokens": 1, "outputTokens": 1}}
+    monkeypatch.setattr(tasks, "suggest", fake_suggest)
+    assert client.post(f"/api/v1/projects/{pid}/ai-plan", json={"revision": 9}, headers=BOB).status_code == 404
+    job = client.post(f"/api/v1/projects/{pid}/ai-plan", json={"revision": 1}, headers=ALICE).json()
+    assert job["status"] == "ready", job
+    assert job["result"]["revision"] == 2 and job["result"]["overridden"] == 1
+    d = client.get(f"/api/v1/projects/{pid}", headers=ALICE).json()["design"]
+    by_id = {r["id"]: r for r in d["regions"]}
+    assert by_id["r1"]["stitchType"] == "running" and by_id["r2"]["stitchType"] == "fill"  # satin overridden
+    assert d["aiReview"]["risks"][0]["message"] == "注意"
+    # Manual satin on a block is refused with the rule's reason
+    bad = client.patch(f"/api/v1/projects/{pid}/design", headers=ALICE,
+                       json={"baseRevision": 2, "regions": [{"id": "r2", "stitchType": "satin"}]})
+    assert bad.status_code == 422 and bad.json()["detail"] == "satin_needs_uniform_stroke"

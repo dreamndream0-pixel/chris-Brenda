@@ -15,14 +15,17 @@ from pathlib import Path
 from sqlalchemy import insert, select, update
 
 from services.core import db
+from services.core.settings import get_settings
 from services.core.storage import get_storage, object_key
 
 from .engine import EngineError, compile_svg
 from .fabrics import FABRIC_PRESETS
+from .ai_plan import AiError, suggest
 from .preview import stitch_sequence
 from .raster_import import JPEG_MAGIC, PNG_MAGIC, RasterOptions, import_raster
 from .svg_compile import CompileInputError, compile_design
 from .svg_import import ImportError_, annotate_warnings, import_svg
+from .rules import color_changes, plan_design
 from .validate import compare_exports, validate_file
 
 INKSTITCH_VERSION = "v3.3.0"
@@ -44,13 +47,13 @@ def run_job(job_id: str) -> None:
         job = conn.execute(select(db.jobs).where(db.jobs.c.id == job_id)).mappings().first()
     if job is None or job["status"] not in ("queued",):
         return
-    handler = {"analyze": _analyze, "compile": _compile, "export": _export}.get(job["kind"])
+    handler = {"analyze": _analyze, "compile": _compile, "export": _export, "ai_plan": _ai_plan}.get(job["kind"])
     try:
         if handler is None:
             raise JobFailure("unknown_job_kind", job["kind"])
         result = handler(dict(job))
         _set(job_id, status="ready", progress=100, result=result)
-    except (JobFailure, ImportError_, CompileInputError, EngineError) as exc:
+    except (JobFailure, ImportError_, CompileInputError, EngineError, AiError) as exc:
         _set(job_id, status="failed", error_code=exc.code, error_message=str(exc)[:2000])
     except Exception as exc:  # noqa: BLE001 - never leave a job stuck in a running state
         traceback.print_exc()
@@ -106,9 +109,14 @@ def _analyze(job: dict) -> dict:
         project = _project(conn, job["project_id"])
         upload = conn.execute(select(db.uploads).where(db.uploads.c.id == params.get("uploadId"),
                                                        db.uploads.c.project_id == project["id"])).mappings().first()
-    if upload is None or upload["status"] not in ("uploaded", "used"):
-        raise JobFailure("upload_missing", "upload not found or not finished")
-    data = get_storage().get(upload["storage_key"])
+    if upload is None:
+        raise JobFailure("upload_missing", "upload not found")
+    try:
+        data = get_storage().get(upload["storage_key"])
+    except FileNotFoundError as exc:
+        raise JobFailure("upload_missing", "the file has not been uploaded") from exc
+    if len(data) > min(upload["declared_size"], get_settings().max_upload_bytes) or not data:
+        raise JobFailure("file_too_large" if data else "upload_missing", "uploaded file is empty or too large")
 
     width = params.get("widthMm") or project["width_mm"] or 50
     previews: dict[str, bytes] = {}
@@ -122,6 +130,9 @@ def _analyze(job: dict) -> dict:
         design = import_svg(data, width_mm=width, fabric=project["fabric_preset"], height_mm=params.get("heightMm"))
     design["lockAspect"] = params.get("lockAspect", True)
     design["source"] = {"uploadId": upload["id"], "filename": upload["filename"]}
+    before = color_changes(design)
+    design = annotate_warnings(plan_design(design))  # deterministic stitch plan + colour grouping
+    design["planner"] = {"version": 1, "ai": False, "colorChangesBefore": before, "colorChangesAfter": color_changes(design)}
 
     with db.get_engine().begin() as conn:
         project = _project(conn, job["project_id"])
@@ -131,7 +142,40 @@ def _analyze(job: dict) -> dict:
         conn.execute(update(db.uploads).where(db.uploads.c.id == upload["id"]).values(status="used"))
     _set(job["id"], revision=revision)
     return {"revision": revision, "regions": len(design["regions"]), "colors": len(design["palette"]),
-            "warnings": design["warnings"], "sizeMm": design["sizeMm"], "raster": design.get("raster")}
+            "warnings": design["warnings"], "sizeMm": design["sizeMm"], "raster": design.get("raster"),
+            "stitchTypes": _stitch_counts(design), "planner": design["planner"]}
+
+
+def _stitch_counts(design: dict) -> dict:
+    counts: dict[str, int] = {}
+    for r in design["regions"]:
+        counts[r["stitchType"]] = counts.get(r["stitchType"], 0) + 1
+    return counts
+
+
+def _ai_plan(job: dict) -> dict:
+    _set(job["id"], status="planning", progress=20)
+    with db.get_engine().connect() as conn:
+        project = _project(conn, job["project_id"])
+        design = _design(conn, project["id"], job["revision"])
+    ai = suggest(design)
+    planned = annotate_warnings(plan_design(design, ai["regions"]))
+    planned["planner"] = {**design.get("planner", {}), "version": 1, "ai": True, "model": ai["model"],
+                          "colorChangesAfter": color_changes(planned)}
+    planned["aiReview"] = {"summary": ai["summary"], "risks": ai["risks"], "model": ai["model"],
+                           "usage": ai["usage"], "basedOnRevision": job["revision"]}
+    with db.get_engine().begin() as conn:
+        project = _project(conn, job["project_id"])
+        if project["current_revision"] != job["revision"]:
+            raise JobFailure("revision_conflict", "design changed while the AI was reviewing it")
+        revision = save_revision(conn, project, planned)
+    plans = [r["plan"] for r in planned["regions"]]
+    before = {r["id"]: r["stitchType"] for r in design["regions"]}
+    return {"revision": revision, "basedOnRevision": job["revision"], "model": ai["model"],
+            "changed": sum(1 for r in planned["regions"] if before[r["id"]] != r["stitchType"]),
+            "needsReview": sum(1 for p in plans if p["needsReview"]),
+            "overridden": sum(1 for p in plans if p["override"]), "risks": len(ai["risks"]),
+            "stitchTypes": _stitch_counts(planned), "usage": ai["usage"]}
 
 
 def _expected_color_blocks(design: dict) -> int:
@@ -148,7 +192,14 @@ def expected_extent_mm(design: dict) -> tuple[float, float]:
     """Stitched width/height implied by the visible regions (hiding an edge region shrinks it)."""
     _, _, vw, vh = design["geometry"]["viewBox"]
     sx, sy = design["sizeMm"]["width"] / vw, design["sizeMm"]["height"] / vh
-    boxes = [r["bbox"] for r in design["regions"] if not r.get("hidden")]
+    def box(r: dict) -> list[float]:
+        # A stroke sewn as satin is as wide as the stroke: grow its centreline bbox by half of it.
+        if r.get("shape") == "line" and r["stitchType"] == "satin":
+            h = float(r.get("strokeWidthUnits") or 0) / 2
+            return [r["bbox"][0] - h, r["bbox"][1] - h, r["bbox"][2] + h, r["bbox"][3] + h]
+        return r["bbox"]
+
+    boxes = [box(r) for r in design["regions"] if not r.get("hidden")]
     if not boxes:
         raise JobFailure("all_regions_hidden", "no visible regions")
     w = (max(b[2] for b in boxes) - min(b[0] for b in boxes)) * sx
@@ -167,7 +218,8 @@ def _compile(job: dict) -> dict:
     with tempfile.TemporaryDirectory(prefix="emb-compile-") as tmp:
         tmp_dir = Path(tmp)
         (tmp_dir / "design.svg").write_bytes(svg)
-        compiled = compile_svg(tmp_dir / "design.svg", tmp_dir / "out")
+        compiled = compile_svg(tmp_dir / "design.svg", tmp_dir / "out",
+                               cache_dir=get_settings().data_dir / "inkstitch-cache" / project["id"])
 
         _set(job["id"], status="validating", progress=75)
         exp_w, exp_h = expected_extent_mm(design)

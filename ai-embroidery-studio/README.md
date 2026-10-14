@@ -5,6 +5,37 @@
 - **Gate A — 核心可編譯能力**：固定 SVG → Ink/Stitch CLI → DST/PES → pyembroidery 重讀驗證 → 針跡預覽。
 - **Gate B — 完整使用流程**：網頁上傳 SVG → 建立專案 → 設定尺寸與布料 → 編譯 → 預覽 → 匯出工廠交件包 → 下載；含權限與檔案限制。
 - **Gate C — 圖片轉向量**：PNG/JPG → 去背 → Lab 分色 → 清除雜點 → VTracer → 區域 JSON → 填針／平針；結果不理想時可重新分析（色數、背景）或逐區改針法、改色、不繡。
+- **Gate D — 針法規劃與 AI 建議**：幾何分析（厚度、中心線）＋規則引擎自動選填針／中心線平針／緞面、在不破壞重疊關係下重排以減少換色；可選的 Claude 視覺建議，一律經規則覆核。
+- **正式環境準備**：Supabase Auth（網站登入）、Supabase Storage（私有 bucket、簽名網址、瀏覽器直傳）、Postgres（同一份 migration + RLS）；部署步驟見 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
+## Gate D：針法規劃與 AI 建議
+
+**分工**（規劃書 §6）：幾何與規則是確定性的、永遠執行；AI 只提供建議，且只能引用既有區域 ID。
+
+| 模組 | 作用 |
+|---|---|
+| `services/worker/geometry.py` | 以 0.1 mm 解析度點陣化每個區域：面積、最大厚度、孔洞數；對單一路徑、不分岔的線條狀區域用 Zhang-Suen 細化＋最長測地路徑取得**中心線**與平均寬度、寬度變異。SVG 描邊直接以路徑本身為中心線、描邊寬度為寬度。 |
+| `services/worker/rules.py` | **細線（< 1.2 mm）→ 中心線平針**；**寬度均勻、1.5–6 mm 的線條 → 緞面**（硬限制 1–7 mm、寬度變異 ≤ 25%、長 ≥ 2 倍寬）；其他 → 填針。AI 建議若違反限制即被否決並標「需確認」，信心 < 0.6 也標「需確認」。**換色重排**：同色區域往前合併，但絕不越過與它重疊的區域。 |
+| `services/worker/ai_plan.py` | 送 Claude（預設 `claude-opus-5-5`，effort `medium`，結構化 JSON 輸出，啟用 `fallbacks: "default"`）：**區域重繪標號圖（不是原始上傳檔）**＋每區幾何數據。回覆經驗證：未知 ID、非法針法、未知風險代碼一律丟棄；拒答、截斷、格式錯、限流、金鑰錯誤都有對應錯誤碼。 |
+| `services/worker/svg_compile.py` | 緞面以「單一描邊＋`inkstitch:satin_column`」交給 Ink/Stitch，依寬度開中心走針／輪廓／Z 字底針；平針可沿中心線或外框。 |
+
+規則結果實例（真實 Ink/Stitch 編譯）：徽章外圈描邊 → 中心線平針、換色 2 → 1 次；CHUÉ 的 C → 緞面；吉祥物的嘴巴弧線 → 緞面；一條 3 mm 曲線＋細線＋波浪色帶＋方塊 → 2 緞面、1 平針、1 填針，換色 3 → 1 次。
+
+**AI 未在此環境實測**：這裡沒有 Anthropic API 金鑰，AI 流程以假客戶端測試（請求格式、回覆驗證、規則否決、各種失敗）。設定 `ANTHROPIC_API_KEY` 後請照 `docs/DEPLOY.md` 第 5 節驗證。
+
+## 編譯加速
+
+- `services/worker/inkstitch_launcher.py`：啟動 Ink/Stitch 前換掉線色目錄（Ink/Stitch 每次都會解析約 150 個品牌色票、每個解析兩次，只為了替線色取品牌名稱；我們不用這些名稱）。四個固定測試圖的 DST/PES 與原版**逐位元組相同**，每次編譯約省 5 秒。
+- 每個專案一個 Ink/Stitch 針跡快取（`$EMB_DATA_DIR/inkstitch-cache/<project>`，上限 20 MB）：同一份設計重新編譯 16 秒 → 1 秒。**改線色不會命中快取**（顏色是 Ink/Stitch 快取鍵的一部分）；試過用 pyembroidery 直接改 PES 線色，但會多出剪線並改變色票，所以不採用。
+- 引擎逾時 180 → 300 秒。
+
+## 正式環境（Supabase）
+
+| 項目 | 實作 | 驗證 |
+|---|---|---|
+| 登入 | 網站 `NEXT_PUBLIC_AUTH_MODE=supabase`：Email＋密碼、註冊確認信、寄送登入連結；API 驗 JWT（JWKS 或舊版 HS256 secret） | JWT 驗證有測試；網站兩種模式都能建置；**未連真實 Supabase** |
+| 檔案 | `EMB_STORAGE=supabase`：私有 bucket；瀏覽器用簽名上傳網址直傳；下載、預覽圖用 Supabase 簽名網址；worker 讀檔時才檢查大小 | 請求格式對照 supabase storage-js 原始碼，用 mock transport 測試；**未連真實 Supabase** |
+| 資料庫 | SQLAlchemy 改用原生 `uuid` 欄位，Postgres 時不自動建表（由 migration 建立）；支援 Supabase pooler | 在真實 Postgres 16 套用 migration（以最小 auth/storage stub 代替 Supabase 內建 schema），跑完整 API 流程，並以 `authenticated` 角色驗證 RLS：只看得到自己的資料、不能直接寫入 |
 
 ## Gate C：圖片轉向量
 
@@ -30,8 +61,7 @@
 測試圖由 `tools/make_raster_fixtures.py` 產生。測試：53 個（含 3 個真實 Ink/Stitch 圖片編譯，約 2 分 40 秒）。
 
 **已知限制**：
-- **編譯時間**：吉祥物約 100 秒（SVG 徽章約 35 秒）。剖析結果：主要花在 Ink/Stitch tatami 填針繞開孔洞（眼睛、臉頰）的移動路徑計算，另約兩成是每次重新讀取 150 個線色色票（Ink/Stitch 本身每個色票讀兩次）。目前引擎逾時 180 秒，更複雜的圖可能逾時；之後可考慮修補 Ink/Stitch 色票載入或保留每個專案的 Ink/Stitch 快取。
-- 細線（< 1 mm）只會發出警告，仍以填針處理；自動轉成中心線平針需要骨架化，留待 Gate D。
+- **編譯時間**：吉祥物冷編譯約 95 秒，主要花在 Ink/Stitch tatami 填針繞開孔洞（眼睛、臉頰）的移動路徑計算；試過「先補滿孔洞再疊繡細節」可降到 59 秒，但針數多 33%，所以沒有採用。見下方「編譯加速」。
 - 區域改成平針時是「沿外框一圈」，內部會露出布料（顏色區域互不重疊）。
 - 漸層與照片式圖片不在 MVP 範圍；分色會把漸層切成色塊。
 
@@ -78,9 +108,8 @@ cd apps/web && npm install && npm run dev     # http://localhost:3000/studio
 - 上傳與下載都用 HMAC 簽名的短效 token（上傳 10 分鐘、下載 5 分鐘），下載回應帶 `Content-Disposition: attachment`、`nosniff`、`CSP: sandbox`。
 - 每位使用者同時最多 3 個進行中的工作（超過回 429）。
 - 設計修改需帶 `baseRevision`，過期回 409；舊 revision 的編譯不會覆蓋新 revision 的結果。
-- **登入目前是開發模式**（`X-Dev-User` 標頭，任何人輸入名稱即可）。API 已支援 Supabase JWT（`EMB_AUTH_MODE=supabase`），但前端尚未接 Supabase Auth，**不可對外公開部署**。
-- **檔案儲存目前只有本機檔案系統版本**；Supabase Storage 版本（同一套 key 結構與簽名 URL）尚未實作。
-- 區域照 SVG 文件順序縫製，尚未自動重排以減少換色（例：徽章「深藍→紅→深藍」會換色 2 次）；屬 Gate D/E。
+- 開發模式（`EMB_AUTH_MODE=dev`）任何人輸入名稱即可登入，**只能本機使用**；正式環境請用 Supabase 模式（見上方與 `docs/DEPLOY.md`）。
+- 若 worker 啟動設定錯誤（例如找不到 `services` 套件），工作會一直停在「排隊中」，網頁等 10 分鐘才逾時；部署後請先看 worker log 確認有 `Listening on emb`。
 - 渲染 Ink/Stitch 的子程序只拿到最小環境變數，但與 worker 共用網路；Docker 版把 worker 放在無對外網路的 internal network。
 
 ### Gate B 驗證

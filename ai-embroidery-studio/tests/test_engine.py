@@ -111,3 +111,11 @@ def test_timeout_kills_child_processes(monkeypatch, tmp_path):
     import time
     time.sleep(3)
     assert not marker.exists()
+
+
+def test_cache_dir_is_passed_and_bounded(tmp_path):
+    cache = engine.prepare_cache_dir(tmp_path / "cache")
+    env = engine._child_env(tmp_path / "job", cache)
+    assert env["XDG_CONFIG_HOME"] == str(cache)
+    assert '"cache_size": 20' in (cache / "inkstitch" / "settings.json").read_text()
+    assert engine._child_env(tmp_path / "job")["XDG_CONFIG_HOME"] == str(tmp_path / "job")

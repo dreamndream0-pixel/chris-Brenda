@@ -56,6 +56,22 @@ def _running_attrs(p: dict) -> dict[str, str]:
     }
 
 
+def _satin_attrs(p: dict, width_mm: float) -> dict[str, str]:
+    underlay = bool(p.get("underlay", True))
+    return {
+        _ink("satin_column"): "True",
+        _ink("zigzag_spacing_mm"): _fmt(float(p.get("zigzagSpacingMm", 0.4))),
+        _ink("pull_compensation_mm"): _fmt(float(p.get("pullCompensationMm", 0.2))),
+        _ink("center_walk_underlay"): _fmt(underlay),
+        _ink("contour_underlay"): _fmt(underlay and width_mm >= 2.0),
+        _ink("zigzag_underlay"): _fmt(underlay and width_mm >= 3.5),
+    }
+
+
+def _centerline(region: dict) -> dict | None:
+    return (region.get("metrics") or {}).get("centerline")
+
+
 def compile_design(design: dict) -> bytes:
     if design.get("schemaVersion") != 1:
         raise CompileInputError("unsupported_schema", "schemaVersion must be 1")
@@ -96,9 +112,16 @@ def compile_design(design: dict) -> bytes:
         if not d:
             continue
         stitch_type = region["stitchType"]
-        if stitch_type not in ("fill", "running"):
-            raise CompileInputError("unsupported_stitch_type", f"{stitch_type} is not available yet")
+        if stitch_type not in ("fill", "running", "satin"):
+            raise CompileInputError("unsupported_stitch_type", f"{stitch_type} is not available")
         params = clamp_params(stitch_type, region.get("params", {}))
+        center = _centerline(region)
+        if stitch_type == "satin" or (stitch_type == "running" and region.get("runningPath") == "centerline"):
+            if not center:
+                raise CompileInputError("missing_centerline", f"region {region['id']} has no centreline")
+            d = Path(center["d"]).d()
+        if stitch_type == "fill" and region.get("shape") == "line":
+            raise CompileInputError("fill_needs_area", f"region {region['id']} is a line")
 
         node = etree.SubElement(layer, f"{{{SVG_NS}}}path")
         node.set("id", re.sub(r"[^\w-]", "_", str(region["id"]))[:64])
@@ -107,6 +130,11 @@ def compile_design(design: dict) -> bytes:
             rule = "evenodd" if region.get("fillRule") == "evenodd" else "nonzero"
             node.set("style", f"fill:{hex_color};stroke:none;fill-rule:{rule}")
             attrs = _fill_attrs(params)
+        elif stitch_type == "satin":
+            # Ink/Stitch turns a single stroke wider than its satin threshold into a satin column.
+            width_units = float(center["widthUnits"])
+            node.set("style", f"fill:none;stroke:{hex_color};stroke-width:{width_units:.6g};stroke-linecap:butt")
+            attrs = _satin_attrs(params, width_units * (sx + sy) / 2)
         else:
             stroke_w = RUNNING_STROKE_MM / max(min(sx, sy), 1e-9)
             node.set("style", f"fill:none;stroke:{hex_color};stroke-width:{stroke_w:.6g}")

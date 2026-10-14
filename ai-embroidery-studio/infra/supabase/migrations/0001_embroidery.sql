@@ -45,7 +45,7 @@ create table if not exists public.emb_jobs (
   project_id uuid not null references public.emb_projects(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   revision integer,
-  kind text not null check (kind in ('analyze', 'compile', 'export')),
+  kind text not null check (kind in ('analyze', 'compile', 'export', 'ai_plan')),
   status text not null default 'queued',
   progress integer not null default 0,
   params jsonb,
@@ -103,7 +103,8 @@ create policy emb_test_sews_owner_read on public.emb_test_sews
 
 -- Private bucket; objects live under embroidery/private/{userId}/... and are only
 -- handed out through short-lived signed URLs created by the API.
-insert into storage.buckets (id, name, public) values ('embroidery', 'embroidery', false)
+-- 50 MB cap per object; uploads are further limited to 8 MB by the API/worker.
+insert into storage.buckets (id, name, public, file_size_limit) values ('embroidery', 'embroidery', false, 52428800)
   on conflict (id) do nothing;
 create policy emb_storage_owner_read on storage.objects
   for select using (bucket_id = 'embroidery' and (storage.foldername(name))[2] = auth.uid()::text);

@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { api, ApiError, getDevUser, type Project } from "@/lib/api";
+import { api, ApiError, type Project } from "@/lib/api";
+import { currentUserLabel } from "@/lib/auth";
 import { errorMessage, fabricLabel, PROJECT_STATUS } from "@/lib/labels";
 
 export default function StudioPage() {
@@ -10,8 +11,10 @@ export default function StudioPage() {
   const [query, setQuery] = useState("");
 
   useEffect(() => {
-    if (!getDevUser()) { setError(errorMessage("not_authenticated")); return; }
-    api.listProjects().then(setProjects).catch((e: ApiError) => setError(errorMessage(e.code)));
+    currentUserLabel().then(user => {
+      if (!user) { setError(errorMessage("not_authenticated")); return; }
+      api.listProjects().then(setProjects).catch((e: ApiError) => setError(errorMessage(e.code)));
+    });
   }, []);
 
   const shown = useMemo(() => (projects ?? []).filter(p => p.name.toLowerCase().includes(query.toLowerCase())), [projects, query]);

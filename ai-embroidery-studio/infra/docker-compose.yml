@@ -1,6 +1,7 @@
 # Local stack: Redis + API + RQ worker (one image). Front-end runs separately (apps/web: npm run dev).
 #   docker compose -f infra/docker-compose.yml up --build
-# The worker and Redis sit on an internal network with no internet access; only the API is published.
+# The worker and Redis sit on an internal network; only the API is published. If ANTHROPIC_API_KEY is set,
+# give the worker a route to api.anthropic.com (e.g. add it to the public network) - Ink/Stitch itself never needs it.
 services:
   redis:
     image: redis:7.4.1-alpine
@@ -18,6 +19,8 @@ services:
       EMB_SIGNING_SECRET: change-me-local-only
       EMB_PUBLIC_API_URL: http://localhost:8000
       EMB_CORS_ORIGINS: http://localhost:3000
+      # AI 針法建議：API 只需要 EMB_AI_ENABLED=1；金鑰只給 worker（見 worker 段落）
+      EMB_AI_ENABLED: ${EMB_AI_ENABLED:-0}
     volumes: [emb-data:/data]
     ports: ["8000:8000"]
     networks: [internal, public]
@@ -26,7 +29,9 @@ services:
   worker:
     build: { context: .., dockerfile: infra/worker/Dockerfile }
     command: ["rq", "worker", "emb", "--url", "redis://redis:6379/0"]
-    environment: *env
+    environment:
+      <<: *env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes: [emb-data:/data]
     networks: [internal]
     cpus: 2

@@ -24,6 +24,10 @@ class Settings:
     signing_secret: str
     public_api_url: str
     cors_origins: list[str] = field(default_factory=list)
+    storage_backend: str = "local"   # "local" (filesystem) or "supabase" (Supabase Storage)
+    supabase_url: str = ""
+    supabase_service_key: str = ""
+    storage_bucket: str = "embroidery"
     max_upload_bytes: int = 8 * 1024 * 1024
     max_active_jobs_per_user: int = 3
     signed_url_ttl_s: int = 300
@@ -42,6 +46,11 @@ def get_settings() -> Settings:
         raise RuntimeError("supabase auth needs SUPABASE_JWT_SECRET or SUPABASE_JWKS_URL")
     if auth_mode not in ("dev", "supabase"):
         raise RuntimeError(f"unknown EMB_AUTH_MODE {auth_mode!r}")
+    storage_backend = _env("EMB_STORAGE", "local")
+    if storage_backend not in ("local", "supabase"):
+        raise RuntimeError(f"unknown EMB_STORAGE {storage_backend!r}")
+    if storage_backend == "supabase" and not (_env("SUPABASE_URL") and _env("SUPABASE_SERVICE_ROLE_KEY")):
+        raise RuntimeError("EMB_STORAGE=supabase needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY")
     return Settings(
         data_dir=data_dir,
         database_url=_env("EMB_DATABASE_URL", f"sqlite:///{data_dir / 'emb.db'}"),
@@ -53,4 +62,8 @@ def get_settings() -> Settings:
         signing_secret=signing_secret,
         public_api_url=_env("EMB_PUBLIC_API_URL", "http://localhost:8000").rstrip("/"),
         cors_origins=[o for o in _env("EMB_CORS_ORIGINS", "http://localhost:3000").split(",") if o],
+        storage_backend=storage_backend,
+        supabase_url=_env("SUPABASE_URL").rstrip("/"),
+        supabase_service_key=_env("SUPABASE_SERVICE_ROLE_KEY"),
+        storage_bucket=_env("EMB_STORAGE_BUCKET", "embroidery"),
     )

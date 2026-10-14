@@ -4,8 +4,8 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import RasterOptionsFields, { DEFAULT_RASTER, toAnalyzeOptions, type RasterChoice } from "@/components/RasterOptionsFields";
 import StitchCanvas from "@/components/StitchCanvas";
-import { api, ApiError, waitForJob, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches } from "@/lib/api";
-import { errorMessage, FABRICS, fabricLabel, JOB_STATUS, PROJECT_STATUS, warningLabel } from "@/lib/labels";
+import { api, ApiError, waitForJob, type AppConfig, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches, type StitchType } from "@/lib/api";
+import { errorMessage, FABRICS, fabricLabel, JOB_STATUS, planReason, PROJECT_STATUS, STITCH_LABEL, warningLabel } from "@/lib/labels";
 
 const DOWNLOADS: { kind: string; label: string }[] = [
   { kind: "export_zip", label: "工廠交件 ZIP" },
@@ -30,6 +30,9 @@ export default function ProjectPage() {
   const [paletteEdits, setPaletteEdits] = useState<Record<string, string>>({});
   const [previews, setPreviews] = useState<{ source_preview?: string; quantized_preview?: string }>({});
   const [raster, setRaster] = useState<RasterChoice>(DEFAULT_RASTER);
+  const [config, setConfig] = useState<AppConfig | null>(null);
+
+  useEffect(() => { api.config().then(setConfig).catch(() => setConfig(null)); }, []);
 
   const load = useCallback(async () => {
     try {
@@ -93,6 +96,12 @@ export default function ProjectPage() {
     setBusy("排隊中");
     const job = await waitForJob(await api.compile(id, revision), j => setBusy(JOB_STATUS[j.status] ?? j.status));
     if (job.status === "failed") setError(errorMessage(job.errorCode));
+    await load();
+  });
+
+  const aiReview = () => run("AI 分析中", async () => {
+    const job = await waitForJob(await api.aiPlan(id, project.currentRevision), j => setBusy(JOB_STATUS[j.status] ?? j.status));
+    if (job.status === "failed") { setError(errorMessage(job.errorCode)); return; }
     await load();
   });
 
@@ -198,6 +207,34 @@ export default function ProjectPage() {
             )}
           </div>
 
+          <div className="card space-y-2 p-4">
+            <h2 className="font-medium">AI 針法建議</h2>
+            {config?.aiEnabled ? (
+              <>
+                <p className="text-xs text-muted">
+                  會把區域的重繪預覽圖（不是原始檔）和幾何數據送到 Anthropic 的 Claude 分析。AI 只提出建議，最後由規則檢查並產生新版本。
+                </p>
+                <button className="btn w-full justify-center" disabled={!!busy || dirty} onClick={aiReview}>
+                  {design.aiReview ? "重新請 AI 建議" : "請 AI 建議針法"}
+                </button>
+                {dirty && <p className="text-xs text-warn">請先儲存目前的修改。</p>}
+              </>
+            ) : (
+              <p className="text-xs text-muted">伺服器未設定 AI（ANTHROPIC_API_KEY），目前由規則依幾何判斷針法。</p>
+            )}
+            {design.aiReview && (
+              <div className="space-y-1 text-sm">
+                <p>{design.aiReview.summary}</p>
+                {design.aiReview.risks.length > 0 && (
+                  <ul className="list-disc space-y-0.5 pl-5 text-xs text-warn">
+                    {design.aiReview.risks.map((risk, i) => <li key={i}>{risk.message}</li>)}
+                  </ul>
+                )}
+                <p className="text-xs text-muted">模型：{design.aiReview.model}（依 revision {design.aiReview.basedOnRevision}）</p>
+              </div>
+            )}
+          </div>
+
           {design.raster && (
             <div className="card space-y-3 p-4">
               <h2 className="font-medium">圖片轉向量</h2>
@@ -231,34 +268,54 @@ export default function ProjectPage() {
           </div>
 
           <div className="card space-y-2 p-4">
-            <h2 className="font-medium">區域（{visibleCount}/{design.regions.length} 繡製）</h2>
-            <ul className="max-h-80 space-y-2 overflow-auto text-sm">
+            <h2 className="font-medium">區域（{visibleCount}/{design.regions.length} 繡製，依縫製順序）</h2>
+            {design.planner?.colorChangesBefore !== undefined && design.planner.colorChangesAfter !== undefined
+              && design.planner.colorChangesAfter < design.planner.colorChangesBefore && (
+              <p className="text-xs text-muted">已自動調整順序：換色 {design.planner.colorChangesBefore} → {design.planner.colorChangesAfter} 次（不改變圖形重疊關係）。</p>
+            )}
+            <ul className="max-h-96 space-y-2 overflow-auto text-sm">
               {design.regions.map(reg => {
                 const hidden = regionValue(reg.id, "hidden", !!reg.hidden);
                 const colorId = regionValue(reg.id, "colorId", reg.colorId);
+                const allowedFor = detail.allowedStitches[reg.id];
+                const plan = reg.plan;
                 return (
-                  <li key={reg.id} className={`flex items-center gap-2 ${hidden ? "opacity-50" : ""}`}>
-                    <input type="checkbox" checked={!hidden} aria-label={`繡製 ${reg.name}`}
-                      disabled={!hidden && visibleCount <= 1}
-                      onChange={e => editRegion(reg.id, { hidden: !e.target.checked })} />
-                    <span className="inline-block h-3.5 w-3.5 rounded-sm border border-line" style={{ background: colors[colorId] }} />
-                    <span className="min-w-0 flex-1 truncate">{reg.name}</span>
-                    {design.palette.length > 1 && (
-                      <select className="field w-auto px-1 py-0.5 text-xs" value={colorId} aria-label={`${reg.name} 線色`}
-                        onChange={e => editRegion(reg.id, { colorId: e.target.value })}>
-                        {design.palette.map((c, i) => <option key={c.id} value={c.id}>色 {i + 1}</option>)}
+                  <li key={reg.id} className={hidden ? "opacity-50" : ""}>
+                    <div className="flex items-center gap-2">
+                      <input type="checkbox" checked={!hidden} aria-label={`繡製 ${reg.name}`}
+                        disabled={!hidden && visibleCount <= 1}
+                        onChange={e => editRegion(reg.id, { hidden: !e.target.checked })} />
+                      <span className="inline-block h-3.5 w-3.5 rounded-sm border border-line" style={{ background: colors[colorId] }} />
+                      <span className="min-w-0 flex-1 truncate" title={reg.id}>{reg.name}</span>
+                      {plan?.needsReview && <span className="rounded bg-warn px-1 text-xs text-accent-ink" title="需要人工確認">需確認</span>}
+                      {design.palette.length > 1 && (
+                        <select className="field w-auto px-1 py-0.5 text-xs" value={colorId} aria-label={`${reg.name} 線色`}
+                          onChange={e => editRegion(reg.id, { colorId: e.target.value })}>
+                          {design.palette.map((c, i) => <option key={c.id} value={c.id}>色 {i + 1}</option>)}
+                        </select>
+                      )}
+                      <select className="field w-auto px-1 py-0.5 text-xs" value={regionValue(reg.id, "stitchType", reg.stitchType)}
+                        aria-label={`${reg.name} 針法`} onChange={e => editRegion(reg.id, { stitchType: e.target.value as StitchType })}>
+                        {(["fill", "running", "satin"] as const).map(st => {
+                          const blocked = allowedFor?.[st];
+                          return (blocked && st !== reg.stitchType) ? null : (
+                            <option key={st} value={st} title={blocked ? errorMessage(blocked) : undefined}>{STITCH_LABEL[st]}</option>
+                          );
+                        })}
                       </select>
+                    </div>
+                    {plan && (
+                      <p className="ml-6 mt-0.5 text-xs text-muted">
+                        {plan.manual ? "手動設定" : plan.source === "ai" ? `AI：${plan.aiReason || STITCH_LABEL[plan.suggested]}` : planReason(plan.reason)}
+                        {plan.override && <span className="text-warn">（規則否決 AI 的{STITCH_LABEL[plan.suggested]}：{errorMessage(plan.override)}）</span>}
+                        {reg.runningPath === "centerline" && reg.stitchType === "running" && "・沿中心線"}
+                      </p>
                     )}
-                    <select className="field w-auto px-1 py-0.5 text-xs" value={regionValue(reg.id, "stitchType", reg.stitchType)}
-                      aria-label={`${reg.name} 針法`} onChange={e => editRegion(reg.id, { stitchType: e.target.value as "fill" | "running" })}>
-                      <option value="fill">填針</option>
-                      <option value="running">平針</option>
-                    </select>
                   </li>
                 );
               })}
             </ul>
-            <p className="text-xs text-muted">平針會沿區域外框走一圈，內部不填滿。取消勾選＝不繡這個區域。</p>
+            <p className="text-xs text-muted">平針：細線沿中心線，其他沿外框一圈。緞面：只適用寬 1–7 mm、寬度均勻的線條。取消勾選＝不繡這個區域。</p>
             {(regionPatches.length > 0 || palettePatches.length > 0) && (
               <div className="flex items-center justify-between text-xs">
                 <span className="text-warn">有未儲存的修改，按「儲存並編譯」套用。</span>

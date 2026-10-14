@@ -27,6 +27,20 @@ const MESSAGES: Record<string, string> = {
   unknown_color: "找不到這個顏色，請重新整理。",
   all_regions_hidden: "至少要保留一個可見區域。",
   upload_not_ready: "原始檔不存在或尚未上傳完成。",
+  ai_not_configured: "伺服器尚未設定 AI（ANTHROPIC_API_KEY）。",
+  ai_refused: "AI 拒絕分析這個設計，請改用規則結果或手動調整。",
+  ai_truncated: "AI 回覆不完整，請再試一次。",
+  ai_bad_output: "AI 回覆格式錯誤，請再試一次。",
+  ai_rate_limited: "AI 服務忙碌中，請稍後再試。",
+  ai_auth_failed: "AI 金鑰無效或沒有權限。",
+  ai_unavailable: "暫時連不上 AI 服務。",
+  ai_request_failed: "AI 請求失敗。",
+  too_many_regions: "區域太多（超過 400 個），AI 無法分析。",
+  satin_needs_uniform_stroke: "緞面只適用於寬度均勻的線條狀區域。",
+  satin_too_narrow: "以目前尺寸，這條線窄於 1 mm，無法做緞面。",
+  satin_too_wide: "以目前尺寸，這條線寬於 7 mm，緞面會太鬆。",
+  fill_needs_area: "這是線條（SVG 描邊），不能做填針。",
+  missing_centerline: "這個區域沒有可用的中心線。",
   file_too_large: "檔案超過 8 MB 上限。",
   missing_viewbox: "SVG 缺少 viewBox，無法判斷比例。請在設計軟體中重新匯出。",
   invalid_viewbox: "SVG 的 viewBox 數值異常。",
@@ -64,6 +78,21 @@ const WARNINGS: Record<string, string> = {
   color_blocks_differ_from_design: "換色段數與設計不同",
   small_details_removed: "部分細小雜點已清除（小於 0.8 mm）",
   thin_features_under_1mm: "有寬度小於 1 mm 的細線，刺繡可能不清楚",
+  satin_too_narrow: "緞面線條窄於 1 mm",
+  satin_too_wide: "緞面線條寬於 7 mm，針腳會太長",
+  satin_needs_uniform_stroke: "緞面區域寬度不均",
+  thin_fill_use_running: "細線用填針效果差，建議改平針",
 };
 export const warningLabel = (w: string) =>
   WARNINGS[w] ?? (w.startsWith("unsupported_element_removed:") ? `已移除不支援的元素 <${w.split(":")[1]}>` : w);
+
+export const STITCH_LABEL: Record<string, string> = { fill: "填針", running: "平針", satin: "緞面" };
+
+const PLAN_REASONS: Record<string, string> = {
+  thin_line_centerline: "細線 → 中心線平針",
+  uniform_stroke: "寬度均勻的線條 → 緞面",
+  area_fill: "面積 → 填針",
+  wide_stroke: "粗描邊 → 緞面",
+  stroke_line: "描邊 → 平針",
+};
+export const planReason = (code: string) => PLAN_REASONS[code] ?? code;
