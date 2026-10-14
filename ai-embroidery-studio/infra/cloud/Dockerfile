@@ -22,12 +22,12 @@ RUN python3.12 -m venv --system-site-packages /opt/venv \
     && grep -v '^inkex' /tmp/inkstitch-requirements.txt > /tmp/rest.txt \
     && /opt/venv/bin/pip install --no-cache-dir -r /tmp/rest.txt -r /tmp/backend-requirements.txt
 
-# Spaces run the container as uid 1000.
-RUN useradd --create-home --uid 1000 user && mkdir -p /data && chown user /data
+# Run as uid 1000 (required by Spaces). ubuntu:24.04 already ships a uid-1000 user ("ubuntu").
+RUN mkdir -p /data && chown 1000:1000 /data
 WORKDIR /app
-COPY --chown=user services/ services/
-COPY --chown=user fixtures/ fixtures/
-COPY --chown=user tools/ tools/
+COPY --chown=1000:1000 services/ services/
+COPY --chown=1000:1000 fixtures/ fixtures/
+COPY --chown=1000:1000 tools/ tools/
 
 ENV PATH=/opt/venv/bin:$PATH \
     INKSTITCH_CMD="xvfb-run -a /opt/venv/bin/python /app/services/worker/inkstitch_launcher.py /opt/inkstitch" \
@@ -39,6 +39,7 @@ ENV PATH=/opt/venv/bin:$PATH \
     PORT=7860 \
     MALLOC_ARENA_MAX=2
 
-USER user
+USER 1000:1000
+ENV HOME=/home/ubuntu
 EXPOSE 7860
 CMD ["sh", "-c", "exec uvicorn services.api.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
