@@ -64,7 +64,7 @@ def main() -> None:
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "out", "data"))
         (stage / "infra/worker").mkdir(parents=True)
         shutil.copy(ROOT / "infra/worker/inkstitch-requirements.txt", stage / "infra/worker/")
-        shutil.copy(ROOT / "infra/hf-space/Dockerfile", stage / "Dockerfile")
+        shutil.copy(ROOT / "infra/cloud/Dockerfile", stage / "Dockerfile")
         (stage / "README.md").write_text(README, encoding="utf-8")
         api.upload_folder(repo_id=space, repo_type="space", folder_path=str(stage), delete_patterns="*",
                           commit_message=f"Deploy {os.environ.get('GITHUB_SHA', 'local')[:12]}")

@@ -1,5 +1,5 @@
-# Hugging Face Space (free CPU: 2 vCPU / 16 GB): API + in-process job threads + pinned Ink/Stitch.
-# Built from the Space repo assembled by tools/deploy_hf_space.py (same layout as the project root).
+# Single-container API + in-process job threads + pinned Ink/Stitch. Used for Render (Docker context
+# ai-embroidery-studio, this file) and Hugging Face Spaces. Listens on $PORT (Render: 10000, Spaces: 7860).
 FROM ubuntu:24.04
 
 ARG INKSTITCH_TAG=v3.3.0
@@ -35,8 +35,10 @@ ENV PATH=/opt/venv/bin:$PATH \
     EMB_QUEUE_MODE=thread \
     EMB_WORKER_THREADS=1 \
     EMB_AUTH_MODE=supabase \
-    EMB_STORAGE=supabase
+    EMB_STORAGE=supabase \
+    PORT=7860 \
+    MALLOC_ARENA_MAX=2
 
 USER user
 EXPOSE 7860
-CMD ["uvicorn", "services.api.main:app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers"]
+CMD ["sh", "-c", "exec uvicorn services.api.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]

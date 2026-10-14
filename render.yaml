@@ -1,0 +1,25 @@
+# Render Blueprint (optional; the service can also be created by hand). Free plan: 0.1 vCPU / 512 MB.
+services:
+  - type: web
+    name: emb-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./ai-embroidery-studio/infra/cloud/Dockerfile
+    dockerContext: ./ai-embroidery-studio
+    branch: embroidery-gate-a
+    healthCheckPath: /healthz
+    envVars:
+      - key: SUPABASE_URL
+        value: https://ztzdichlqrbgdjlzdvfx.supabase.co
+      - key: INKSTITCH_TIMEOUT_S
+        value: "1200"
+      - key: EMB_CORS_ORIGINS
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: EMB_DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: EMB_AI_ENABLED
+        value: "1"

@@ -106,12 +106,13 @@ export const api = {
   aiPlan: (id: string, revision: number) => request<Job>(`/api/v1/projects/${id}/ai-plan`, { method: "POST", body: json({ revision }) }),
 };
 
-export async function waitForJob(job: Job, onUpdate?: (j: Job) => void, timeoutMs = 10 * 60_000): Promise<Job> {
+// Generous: free hosting tiers (e.g. 0.1 vCPU) can take many minutes per compile.
+export async function waitForJob(job: Job, onUpdate?: (j: Job) => void, timeoutMs = 30 * 60_000): Promise<Job> {
   const start = Date.now();
   let current = job;
   while (current.status !== "ready" && current.status !== "failed") {
     if (Date.now() - start > timeoutMs) throw new ApiError(0, "job_timeout");
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, Date.now() - start > 60_000 ? 3000 : 800));
     current = await api.job(job.jobId);
     onUpdate?.(current);
   }

@@ -1,4 +1,6 @@
-# 免費部署：Supabase + Hugging Face + Vercel
+# 免費部署：Supabase + Render + Vercel
+
+> 2026-10 更新：Hugging Face 的 Docker Space 已改為需要 PRO 訂閱（約 US$9／月），免費方案改用 **Render 免費 Web Service**（0.1 vCPU / 512 MB，編譯約慢 10 倍、閒置 15 分鐘休眠）。下方 Hugging Face 步驟保留給訂閱 PRO 的情況（Actions 改為手動執行）。後端用同一個映像 `infra/cloud/Dockerfile`，Render 的設定寫在 repo 根目錄的 `render.yaml`。
 
 | 服務 | 放什麼 |
 |---|---|

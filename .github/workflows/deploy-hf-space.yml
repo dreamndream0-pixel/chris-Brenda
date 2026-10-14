@@ -1,12 +1,9 @@
-# Deploys the embroidery API to a Hugging Face Docker Space on every push that touches it.
+# Deploys the embroidery API to a Hugging Face Docker Space (manual only: Docker Spaces now need HF PRO).
 # Repository secrets: HF_TOKEN, SUPABASE_SERVICE_ROLE_KEY, EMB_DATABASE_URL, (optional) ANTHROPIC_API_KEY
 # Repository variables: HF_SPACE, SUPABASE_URL, WEB_ORIGIN
 name: Deploy embroidery API to Hugging Face
 
 on:
-  push:
-    branches: [embroidery-gate-a]
-    paths: ["ai-embroidery-studio/**", ".github/workflows/deploy-hf-space.yml"]
   workflow_dispatch:
 
 permissions:

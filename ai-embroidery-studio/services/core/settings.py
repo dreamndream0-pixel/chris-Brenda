@@ -53,7 +53,9 @@ def get_settings() -> Settings:
     if auth_mode == "supabase" and not (_env("SUPABASE_JWT_SECRET") or jwks_url):
         raise RuntimeError("supabase auth needs SUPABASE_URL, SUPABASE_JWKS_URL or SUPABASE_JWT_SECRET")
     # Hugging Face Spaces sets SPACE_HOST (e.g. "user-space.hf.space").
-    default_public = f"https://{_env('SPACE_HOST')}" if _env("SPACE_HOST") else "http://localhost:8000"
+    # Hosting platforms announce the public URL: Render sets RENDER_EXTERNAL_URL, Spaces set SPACE_HOST.
+    default_public = (_env("RENDER_EXTERNAL_URL") or (f"https://{_env('SPACE_HOST')}" if _env("SPACE_HOST") else "")
+                      or "http://localhost:8000")
     if auth_mode not in ("dev", "supabase"):
         raise RuntimeError(f"unknown EMB_AUTH_MODE {auth_mode!r}")
     storage_backend = _env("EMB_STORAGE", "local")
