@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pyembroidery as pe
 
-from validate import UNITS_PER_MM, read_pattern, summarize
+from .validate import UNITS_PER_MM, read_pattern, summarize
 
 # Compact command codes used by the front-end player.
 CMD_STITCH, CMD_JUMP, CMD_TRIM, CMD_COLOR = 0, 1, 2, 3

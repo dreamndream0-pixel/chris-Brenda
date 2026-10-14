@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 200 100" width="200px" height="100px" onload="alert(1)">
+  <script>alert('x')</script>
+  <defs><linearGradient id="g"><stop offset="0" stop-color="#f00"/></linearGradient></defs>
+  <image xlink:href="https://evil.example/track.png" width="10" height="10"/>
+  <foreignObject><div xmlns="http://www.w3.org/1999/xhtml">hi</div></foreignObject>
+  <g transform="translate(20,10)">
+    <path d="M0 0 H80 V80 H0 Z M20 20 V60 H60 V20 Z" fill="#654a3b" fill-rule="evenodd" onclick="steal()"/>
+    <circle cx="130" cy="40" r="35" style="fill:none;stroke:#1f2a44;stroke-width:2"/>
+    <rect x="110" y="60" width="40" height="15" fill="url(#g)"/>
+    <text x="0" y="95">CHUÉ</text>
+  </g>
+</svg>

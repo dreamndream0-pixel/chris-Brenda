@@ -3,8 +3,8 @@ import json
 import sys
 from pathlib import Path
 
-import gate_a
-import engine
+from services.worker import gate_a
+from services.worker import engine
 from helpers import make_pattern
 from test_engine import FAKE, _zip
 

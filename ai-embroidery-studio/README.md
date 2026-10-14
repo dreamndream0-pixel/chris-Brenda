@@ -1,6 +1,64 @@
-# AI Embroidery Studio — Gate A（核心可編譯能力）
+# AI Embroidery Studio
 
-對應規劃書 §12 Gate A：**固定的手工 SVG → Ink/Stitch CLI 產生 ZIP → 取出 DST/PES → pyembroidery 重讀驗證 → 針跡預覽**。不含 AI、前端、資料庫。
+依《MVP 技術規劃書》分階段開發。目前完成：
+
+- **Gate A — 核心可編譯能力**：固定 SVG → Ink/Stitch CLI → DST/PES → pyembroidery 重讀驗證 → 針跡預覽。
+- **Gate B — 完整使用流程**：網頁上傳 SVG → 建立專案 → 設定尺寸與布料 → 編譯 → 預覽 → 匯出工廠交件包 → 下載；含權限與檔案限制。
+
+## Gate B：本機啟動
+
+需要：Python 3.12 + Ink/Stitch（見下方 Gate A）、Redis、Node 22。
+
+```bash
+# 1) 後端套件（裝在 Ink/Stitch 的 venv 裡，worker 才能呼叫它）
+/opt/venv/bin/pip install -r services/requirements.txt
+
+# 2) 共用環境變數
+export EMB_DATA_DIR=$PWD/data EMB_REDIS_URL=redis://localhost:6379/0 EMB_AUTH_MODE=dev \
+       EMB_SIGNING_SECRET=change-me EMB_PUBLIC_API_URL=http://localhost:8000 EMB_CORS_ORIGINS=http://localhost:3000
+
+# 3) 三個程序（各開一個終端機）
+redis-server
+INKSTITCH_CMD="xvfb-run -a /opt/venv/bin/python /opt/inkstitch/inkstitch.py" /opt/venv/bin/rq worker emb --url $EMB_REDIS_URL
+/opt/venv/bin/uvicorn services.api.main:app --port 8000
+
+# 4) 前端
+cd apps/web && npm install && npm run dev     # http://localhost:3000/studio
+```
+
+或用 Docker：`docker compose -f infra/docker-compose.yml up --build`（Redis + API + worker），前端另外 `npm run dev`。
+
+### Gate B 架構
+
+| 路徑 | 說明 |
+|---|---|
+| `apps/web/` | Next.js 16 + TypeScript + Tailwind：`/studio` 專案列表、`/studio/new` 上傳與尺寸/布料、`/studio/[id]` 設定、編譯、針跡播放、匯出下載（手機可用） |
+| `services/api/` | FastAPI：§9 的 REST API（projects、upload-url、analyze、design PATCH 樂觀鎖、compile、stitches、exports、jobs、短效下載連結） |
+| `services/core/` | 設定、資料表（SQLAlchemy；本機 SQLite，正式 Postgres）、私有儲存、HMAC 簽名 URL、RQ 佇列 |
+| `services/worker/svg_import.py` | SVG 安全清理（元素/屬性白名單、拒絕 DOCTYPE/ENTITY、移除 script/事件/外部連結/圖片/foreignObject/use/CSS/url()）→ 攤平 transform → Design JSON |
+| `services/worker/svg_compile.py` | Design JSON → Ink/Stitch SVG（只輸出白名單且 clamp 過的參數，path 由 svgelements 重新序列化） |
+| `services/worker/fabrics.py` | 布料預設（平織棉／針織棉／帆布／其他）與參數上下限 |
+| `services/worker/tasks.py` | RQ 背景工作：analyze → compile（含驗證）→ export（ZIP：DST、PES、Ink/Stitch SVG、threadlist、規格表 txt/json） |
+| `infra/supabase/migrations/` | Postgres schema + RLS + 私有 bucket |
+
+### Gate B 安全與限制
+
+- 每個查詢都以 `user_id` 過濾；別人的專案、工作、下載一律回 404（不洩漏是否存在）。
+- 上傳：只收 SVG、≤ 8 MB（宣告與實際都檢查）、≤ 5000 元素、≤ 2000 圖形、≤ 50000 路徑段、≤ 12 色、必須有 viewBox。
+- 上傳與下載都用 HMAC 簽名的短效 token（上傳 10 分鐘、下載 5 分鐘），下載回應帶 `Content-Disposition: attachment`、`nosniff`、`CSP: sandbox`。
+- 每位使用者同時最多 3 個進行中的工作（超過回 429）。
+- 設計修改需帶 `baseRevision`，過期回 409；舊 revision 的編譯不會覆蓋新 revision 的結果。
+- **登入目前是開發模式**（`X-Dev-User` 標頭，任何人輸入名稱即可）。API 已支援 Supabase JWT（`EMB_AUTH_MODE=supabase`），但前端尚未接 Supabase Auth，**不可對外公開部署**。
+- **檔案儲存目前只有本機檔案系統版本**；Supabase Storage 版本（同一套 key 結構與簽名 URL）尚未實作。
+- 區域照 SVG 文件順序縫製，尚未自動重排以減少換色（例：徽章「深藍→紅→深藍」會換色 2 次）；屬 Gate D/E。
+- 渲染 Ink/Stitch 的子程序只拿到最小環境變數，但與 worker 共用網路；Docker 版把 worker 放在無對外網路的 internal network。
+
+### Gate B 驗證
+
+- 35 個測試全部通過：API 完整流程、跨使用者存取、簽名連結竄改/過期、上傳限制、惡意 SVG（XXE、script、缺 viewBox）、revision 衝突、舊編譯不覆蓋、工作數上限、引擎失敗、Supabase JWT。
+- 端對端（真實 Redis + RQ worker + Ink/Stitch + 瀏覽器）：上傳 `fixtures/uploads/two_color_badge.svg` → 70 mm 編譯（約 35 秒）→ 改 90 mm、針織棉 → 重新編譯 → 匯出 ZIP → 下載；實際針跡 90.0 × 90.0 mm、3549 針、3 色段。手機寬度無橫向捲動。
+
+## Gate A（核心可編譯能力）
 
 ## 內容
 
@@ -25,13 +83,13 @@ python3 -m venv .venv && .venv/bin/pip install -r services/worker/requirements.t
 .venv/bin/python -m pytest -q tests
 
 # 指定已安裝的 Ink/Stitch 跑真實編譯（範例）
-INKSTITCH_CMD="xvfb-run -a /opt/venv/bin/python /opt/inkstitch/inkstitch.py" python services/worker/gate_a.py
+INKSTITCH_CMD="xvfb-run -a /opt/venv/bin/python /opt/inkstitch/inkstitch.py" python -m services.worker.gate_a
 
 # 完整 Gate A（在 worker 映像內，含真實 Ink/Stitch）
 docker build -f infra/worker/Dockerfile -t emb-worker:gate-a .
 mkdir -p out && chmod 777 out
 docker run --rm --network=none --cpus=2 --memory=2g -v "$PWD/out:/out" emb-worker:gate-a \
-  python services/worker/gate_a.py --fixtures fixtures --out /out/gate-a
+  python -m services.worker.gate_a --fixtures fixtures --out /out/gate-a
 # 然後用瀏覽器開 out/gate-a/preview.html
 ```
 

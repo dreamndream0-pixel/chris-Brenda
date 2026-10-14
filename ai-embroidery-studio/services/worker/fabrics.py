@@ -1,0 +1,70 @@
+"""Fabric presets and parameter limits.
+
+Values are starting points, not tuned production settings: every preset
+must be calibrated with factory test-sews on the real fabric + stabiliser.
+"""
+from __future__ import annotations
+
+FABRIC_PRESETS: dict[str, dict] = {
+    "woven_cotton": {
+        "label": "平織棉",
+        "fill": {"fillAngleDeg": 45, "rowSpacingMm": 0.40, "maxStitchLengthMm": 3.0,
+                 "underlay": True, "pullCompensationMm": 0.10},
+        "running": {"runningStitchLengthMm": 2.0, "repeats": 1},
+    },
+    "knit_cotton": {
+        "label": "針織棉",
+        "fill": {"fillAngleDeg": 45, "rowSpacingMm": 0.40, "maxStitchLengthMm": 3.0,
+                 "underlay": True, "pullCompensationMm": 0.25},
+        "running": {"runningStitchLengthMm": 2.2, "repeats": 1},
+    },
+    "canvas": {
+        "label": "帆布",
+        "fill": {"fillAngleDeg": 45, "rowSpacingMm": 0.38, "maxStitchLengthMm": 3.5,
+                 "underlay": True, "pullCompensationMm": 0.10},
+        "running": {"runningStitchLengthMm": 2.5, "repeats": 1},
+    },
+    "other": {
+        "label": "其他",
+        "fill": {"fillAngleDeg": 45, "rowSpacingMm": 0.40, "maxStitchLengthMm": 3.0,
+                 "underlay": True, "pullCompensationMm": 0.15},
+        "running": {"runningStitchLengthMm": 2.0, "repeats": 1},
+    },
+}
+
+# Whitelisted parameters with hard [min, max] clamps (spec §6 stage 4).
+PARAM_LIMITS: dict[str, dict[str, tuple[float, float]]] = {
+    "fill": {
+        "fillAngleDeg": (-180, 180),
+        "rowSpacingMm": (0.25, 1.5),
+        "maxStitchLengthMm": (1.0, 7.0),
+        "pullCompensationMm": (0.0, 0.6),
+    },
+    "running": {
+        "runningStitchLengthMm": (1.0, 5.0),
+        "repeats": (1, 5),
+    },
+}
+BOOL_PARAMS = {"fill": {"underlay"}, "running": set()}
+INT_PARAMS = {"repeats"}
+
+SIZE_LIMITS_MM = (5.0, 300.0)
+
+
+def default_params(fabric: str, stitch_type: str) -> dict:
+    preset = FABRIC_PRESETS.get(fabric) or FABRIC_PRESETS["other"]
+    return dict(preset[stitch_type])
+
+
+def clamp_params(stitch_type: str, params: dict) -> dict:
+    """Drop unknown keys and clamp numbers into their allowed range."""
+    limits = PARAM_LIMITS[stitch_type]
+    out: dict = {}
+    for key, value in params.items():
+        if key in BOOL_PARAMS[stitch_type]:
+            out[key] = bool(value)
+        elif key in limits:
+            lo, hi = limits[key]
+            v = min(max(float(value), lo), hi)
+            out[key] = int(round(v)) if key in INT_PARAMS else round(v, 3)
+    return out

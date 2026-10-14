@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import gate_a
+from services.worker import gate_a
 
 pytestmark = pytest.mark.skipif(not os.environ.get("INKSTITCH_CMD"), reason="INKSTITCH_CMD not set")
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"

@@ -19,15 +19,15 @@ RUN git clone --depth 1 --branch "${INKSTITCH_TAG}" https://github.com/inkstitch
     && rm -rf /opt/inkstitch/.git
 
 COPY infra/worker/inkstitch-requirements.txt /tmp/inkstitch-requirements.txt
-COPY services/worker/requirements.txt /tmp/worker-requirements.txt
+COPY services/requirements.txt /tmp/backend-requirements.txt
 RUN python3.12 -m venv --system-site-packages /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --no-deps inkex==1.4.1 \
     && grep -v '^inkex' /tmp/inkstitch-requirements.txt > /tmp/rest.txt \
-    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/rest.txt -r /tmp/worker-requirements.txt
+    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/rest.txt -r /tmp/backend-requirements.txt
 
-RUN useradd --create-home --uid 10001 worker
+RUN useradd --create-home --uid 10001 worker && mkdir -p /data && chown worker /data
 WORKDIR /app
-COPY services/worker/ services/worker/
+COPY services/ services/
 COPY fixtures/ fixtures/
 COPY tools/ tools/
 COPY tests/ tests/
@@ -37,5 +37,6 @@ ENV PATH=/opt/venv/bin:$PATH \
     INKSTITCH_CMD="xvfb-run -a /opt/venv/bin/python /opt/inkstitch/inkstitch.py"
 
 USER worker
-# Smoke test = Gate A. Run the container with --network=none and CPU/memory limits.
-CMD ["python", "services/worker/gate_a.py", "--fixtures", "fixtures", "--out", "/tmp/gate-a"]
+# Default command = Gate A smoke test (run with --network=none). docker-compose.yml
+# reuses this image for the API (uvicorn) and the RQ worker.
+CMD ["python", "-m", "services.worker.gate_a", "--fixtures", "fixtures", "--out", "/tmp/gate-a"]

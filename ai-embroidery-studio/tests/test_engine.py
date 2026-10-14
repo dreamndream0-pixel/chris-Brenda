@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import engine
+from services.worker import engine
 from helpers import make_pattern
 
 FAKE = Path(__file__).with_name("fake_inkstitch.py")

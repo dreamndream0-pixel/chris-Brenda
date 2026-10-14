@@ -1,6 +1,6 @@
 from helpers import make_pattern
-from preview import stitch_sequence
-from validate import compare_exports, validate_file
+from services.worker.preview import stitch_sequence
+from services.worker.validate import compare_exports, validate_file
 
 
 def test_single_color_summary(tmp_path):

@@ -2,7 +2,7 @@
 
 Usage:
     INKSTITCH_CMD="/opt/venv/bin/python /opt/inkstitch/inkstitch.py" \
-        python services/worker/gate_a.py --fixtures fixtures --out out/gate-a
+        python -m services.worker.gate_a --fixtures fixtures --out out/gate-a
 
 Exits non-zero if any fixture fails. Writes per-fixture files, report.json
 and preview.html (open it in a browser to play the decoded stitches).
@@ -14,9 +14,9 @@ import json
 import sys
 from pathlib import Path
 
-from engine import EngineError, compile_svg
-from preview import write_preview
-from validate import compare_exports, validate_file
+from .engine import EngineError, compile_svg
+from .preview import write_preview
+from .validate import compare_exports, validate_file
 
 ROOT = Path(__file__).resolve().parents[2]
 VIEWER_TEMPLATE = ROOT / "tools" / "stitch_viewer.html"
