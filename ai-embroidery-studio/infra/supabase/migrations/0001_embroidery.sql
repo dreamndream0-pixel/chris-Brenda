@@ -89,17 +89,17 @@ alter table public.emb_artifacts enable row level security;
 alter table public.emb_test_sews enable row level security;
 
 create policy emb_projects_owner_read on public.emb_projects
-  for select using (user_id = auth.uid());
+  for select using (user_id = (select auth.uid()));
 create policy emb_uploads_owner_read on public.emb_uploads
-  for select using (user_id = auth.uid());
+  for select using (user_id = (select auth.uid()));
 create policy emb_jobs_owner_read on public.emb_jobs
-  for select using (user_id = auth.uid());
+  for select using (user_id = (select auth.uid()));
 create policy emb_revisions_owner_read on public.emb_revisions
-  for select using (exists (select 1 from public.emb_projects p where p.id = project_id and p.user_id = auth.uid()));
+  for select using (exists (select 1 from public.emb_projects p where p.id = project_id and p.user_id = (select auth.uid())));
 create policy emb_artifacts_owner_read on public.emb_artifacts
-  for select using (exists (select 1 from public.emb_projects p where p.id = project_id and p.user_id = auth.uid()));
+  for select using (exists (select 1 from public.emb_projects p where p.id = project_id and p.user_id = (select auth.uid())));
 create policy emb_test_sews_owner_read on public.emb_test_sews
-  for select using (exists (select 1 from public.emb_projects p where p.id = project_id and p.user_id = auth.uid()));
+  for select using (exists (select 1 from public.emb_projects p where p.id = project_id and p.user_id = (select auth.uid())));
 
 -- Private bucket; objects live under embroidery/private/{userId}/... and are only
 -- handed out through short-lived signed URLs created by the API.
@@ -107,4 +107,4 @@ create policy emb_test_sews_owner_read on public.emb_test_sews
 insert into storage.buckets (id, name, public, file_size_limit) values ('embroidery', 'embroidery', false, 52428800)
   on conflict (id) do nothing;
 create policy emb_storage_owner_read on storage.objects
-  for select using (bucket_id = 'embroidery' and (storage.foldername(name))[2] = auth.uid()::text);
+  for select using (bucket_id = 'embroidery' and (storage.foldername(name))[2] = (select auth.uid())::text);

@@ -408,3 +408,25 @@ def test_supabase_es256_via_jwks(make_client, monkeypatch):
     other = ec.generate_private_key(ec.SECP256R1())
     forged = jwt.encode(claims, other, algorithm="ES256", headers={"kid": "k1"})
     assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {forged}"}).status_code == 401
+
+
+def test_supabase_hs256_without_secret_asks_auth_server(make_client, monkeypatch):
+    import httpx
+    from services.api import auth
+    client = make_client(EMB_AUTH_MODE="supabase", SUPABASE_URL="https://proj.supabase.co",
+                         SUPABASE_SERVICE_ROLE_KEY="sb_secret_k", EMB_STORAGE="local")
+    calls = []
+
+    def fake_get(url, headers, timeout):
+        calls.append((url, headers["Authorization"]))
+        ok = headers["Authorization"] == "Bearer " + good
+        return httpx.Response(200 if ok else 401, json={"id": "9b2f5c1e-3f4a-4d2b-8c7e-1a2b3c4d5e6f"} if ok else {})
+    monkeypatch.setattr(auth.httpx, "get", fake_get)
+    auth._USER_CACHE.clear()
+    claims = {"sub": "x", "aud": "authenticated", "exp": int(time.time()) + 60}
+    good = jwt.encode(claims, "unknown-secret-unknown-secret-unknown!!", algorithm="HS256")
+    bad = jwt.encode({**claims, "sub": "y"}, "other-secret-other-secret-other-secret!!", algorithm="HS256")
+    assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {good}"}).status_code == 200
+    assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {good}"}).status_code == 200
+    assert len(calls) == 1 and calls[0][0] == "https://proj.supabase.co/auth/v1/user"  # second hit cached
+    assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {bad}"}).status_code == 401
