@@ -230,13 +230,14 @@ def import_svg(data: bytes, width_mm: float, fabric: str = "woven_cotton",
             "order": i,
             "stitchType": kind,
             "params": default_params(fabric, kind),
-            "bbox": [round(bx0, 4), round(by0, 4), round(bx1, 4), round(by1, 4)],
+            "bbox": [round(float(v), 4) for v in (bx0, by0, bx1, by1)],
             "warnings": [],
         })
     if len(palette) > MAX_COLORS:
         raise ImportError_("too_many_colors", f"more than {MAX_COLORS} colours; simplify the artwork")
 
     lo, hi = SIZE_LIMITS_MM
+    x0, y0, bw, bh = float(x0), float(y0), float(bw), float(bh)  # svgelements may return numpy floats
     width_mm = min(max(float(width_mm), lo), hi)
     if height_mm is None:
         height_mm = width_mm * bh / bw

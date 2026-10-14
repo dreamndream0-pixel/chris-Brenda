@@ -12,14 +12,17 @@ export interface Project {
 }
 export interface Region {
   id: string; name: string; colorId: string; order: number; stitchType: "fill" | "running";
-  params: Record<string, number | boolean>; warnings: string[];
+  params: Record<string, number | boolean>; warnings: string[]; hidden?: boolean;
 }
 export interface Design {
   schemaVersion: 1; projectId: string; revision: number; sizeMm: { width: number; height: number };
   lockAspect: boolean; fabricPreset: FabricPreset; geometry: { viewBox: [number, number, number, number] };
   palette: { id: string; hex: string; threadCode: string | null }[]; regions: Region[]; warnings: string[];
-  source?: { filename: string };
+  source?: { filename: string; uploadId: string };
+  raster?: { pixels: [number, number]; colors: string[]; backgroundHex: string | null; autoColors: boolean };
 }
+export interface AnalyzeOptions { colors?: number | null; removeBackground?: boolean; backgroundHex?: string | null; widthMm?: number }
+export interface RegionPatch { id: string; stitchType?: "fill" | "running"; colorId?: string; hidden?: boolean }
 export interface Job {
   jobId: string; projectId: string; kind: "analyze" | "compile" | "export"; revision: number | null;
   status: JobStatus; progress: number; errorCode: string | null; errorMessage: string | null;
@@ -62,6 +65,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 const json = (body: unknown) => JSON.stringify(body);
 
+export const ACCEPTED = { ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg" } as const;
+export function contentTypeFor(file: File): string {
+  const ext = file.name.toLowerCase().match(/\.[a-z]+$/)?.[0] as keyof typeof ACCEPTED | undefined;
+  return (ext && ACCEPTED[ext]) || file.type;
+}
+export const isRaster = (file: File) => contentTypeFor(file) !== "image/svg+xml";
+
 export const api = {
   listProjects: () => request<Project[]>("/api/v1/projects"),
   createProject: (b: { name: string; widthMm: number; heightMm?: number; lockAspect: boolean; fabricPreset: FabricPreset }) =>
@@ -69,13 +79,17 @@ export const api = {
   getProject: (id: string) => request<ProjectDetail>(`/api/v1/projects/${id}`),
   uploadUrl: (id: string, file: File) => request<{ uploadId: string; uploadUrl: string }>(
     `/api/v1/projects/${id}/upload-url`,
-    { method: "POST", body: json({ filename: file.name, contentType: file.type || "image/svg+xml", sizeBytes: file.size }) }),
+    { method: "POST", body: json({ filename: file.name, contentType: contentTypeFor(file), sizeBytes: file.size }) }),
   async putUpload(url: string, file: File) {
     const res = await fetch(url, { method: "PUT", body: file });
     if (!res.ok) throw new ApiError(res.status, res.status === 413 ? "file_too_large" : "upload_failed");
   },
-  analyze: (id: string, uploadId: string) => request<Job>(`/api/v1/projects/${id}/analyze`, { method: "POST", body: json({ uploadId }) }),
-  patchDesign: (id: string, b: { baseRevision: number; sizeMm?: { width: number; height?: number }; lockAspect?: boolean; fabricPreset?: FabricPreset }) =>
+  analyze: (id: string, uploadId: string, opts: AnalyzeOptions = {}) =>
+    request<Job>(`/api/v1/projects/${id}/analyze`, { method: "POST", body: json({ uploadId, ...opts }) }),
+  previews: (id: string, revision: number) =>
+    request<Partial<Record<"source_preview" | "quantized_preview", string>>>(`/api/v1/projects/${id}/previews?revision=${revision}`),
+  patchDesign: (id: string, b: { baseRevision: number; sizeMm?: { width: number; height?: number }; lockAspect?: boolean;
+    fabricPreset?: FabricPreset; regions?: RegionPatch[]; palette?: { id: string; hex: string }[] }) =>
     request<{ revision: number; design: Design }>(`/api/v1/projects/${id}/design`, { method: "PATCH", body: json(b) }),
   compile: (id: string, revision: number) => request<Job>(`/api/v1/projects/${id}/compile`, { method: "POST", body: json({ revision }) }),
   exportZip: (id: string, revision: number) => request<Job>(`/api/v1/projects/${id}/exports`, { method: "POST", body: json({ revision }) }),

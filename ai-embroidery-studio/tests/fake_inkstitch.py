@@ -23,9 +23,14 @@ elif mode == "auto":
 
     import pyembroidery as pe
 
+    from svgelements import Matrix, Path
+
     svg = open(sys.argv[-1], encoding="utf-8").read()
-    w = float(re.search(r'width="([\d.]+)mm"', svg).group(1))
-    h = float(re.search(r'height="([\d.]+)mm"', svg).group(1))
+    m = re.search(r'transform="matrix\(([^)]*)\)"', svg)
+    matrix = Matrix(f"matrix({m.group(1)})") if m else Matrix()
+    boxes = [(Path(d) * matrix).bbox() for d in re.findall(r' d="([^"]+)"', svg)]
+    x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+    w, h = max(b[2] for b in boxes) - x0, max(b[3] for b in boxes) - y0
     colors = []
     for c in re.findall(r"(?:fill|stroke):(#[0-9a-f]{6})", svg):
         if not colors or colors[-1] != c:

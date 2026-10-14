@@ -20,6 +20,7 @@ from services.core.storage import get_storage, object_key
 from .engine import EngineError, compile_svg
 from .fabrics import FABRIC_PRESETS
 from .preview import stitch_sequence
+from .raster_import import JPEG_MAGIC, PNG_MAGIC, RasterOptions, import_raster
 from .svg_compile import CompileInputError, compile_design
 from .svg_import import ImportError_, annotate_warnings, import_svg
 from .validate import compare_exports, validate_file
@@ -105,23 +106,32 @@ def _analyze(job: dict) -> dict:
         project = _project(conn, job["project_id"])
         upload = conn.execute(select(db.uploads).where(db.uploads.c.id == params.get("uploadId"),
                                                        db.uploads.c.project_id == project["id"])).mappings().first()
-    if upload is None or upload["status"] != "uploaded":
+    if upload is None or upload["status"] not in ("uploaded", "used"):
         raise JobFailure("upload_missing", "upload not found or not finished")
     data = get_storage().get(upload["storage_key"])
 
+    width = params.get("widthMm") or project["width_mm"] or 50
+    previews: dict[str, bytes] = {}
     _set(job["id"], status="planning", progress=40)
-    design = import_svg(data, width_mm=params.get("widthMm") or project["width_mm"] or 50,
-                        fabric=project["fabric_preset"], height_mm=params.get("heightMm"))
+    if data.startswith(PNG_MAGIC) or data.startswith(JPEG_MAGIC):
+        opts = RasterOptions(colors=params.get("colors"), remove_background=params.get("removeBackground", True),
+                             background_hex=params.get("backgroundHex"))
+        design, thumb, quantized = import_raster(data, width, project["fabric_preset"], opts, params.get("heightMm"))
+        previews = {"source_preview": thumb, "quantized_preview": quantized}
+    else:
+        design = import_svg(data, width_mm=width, fabric=project["fabric_preset"], height_mm=params.get("heightMm"))
     design["lockAspect"] = params.get("lockAspect", True)
     design["source"] = {"uploadId": upload["id"], "filename": upload["filename"]}
 
     with db.get_engine().begin() as conn:
         project = _project(conn, job["project_id"])
         revision = save_revision(conn, project, design)
+        for kind, png in previews.items():
+            _put_artifact(conn, project, revision, job["id"], kind, f"{kind}.png", png)
         conn.execute(update(db.uploads).where(db.uploads.c.id == upload["id"]).values(status="used"))
     _set(job["id"], revision=revision)
     return {"revision": revision, "regions": len(design["regions"]), "colors": len(design["palette"]),
-            "warnings": design["warnings"], "sizeMm": design["sizeMm"]}
+            "warnings": design["warnings"], "sizeMm": design["sizeMm"], "raster": design.get("raster")}
 
 
 def _expected_color_blocks(design: dict) -> int:
@@ -132,6 +142,18 @@ def _expected_color_blocks(design: dict) -> int:
         if region["colorId"] != last:
             blocks, last = blocks + 1, region["colorId"]
     return blocks
+
+
+def expected_extent_mm(design: dict) -> tuple[float, float]:
+    """Stitched width/height implied by the visible regions (hiding an edge region shrinks it)."""
+    _, _, vw, vh = design["geometry"]["viewBox"]
+    sx, sy = design["sizeMm"]["width"] / vw, design["sizeMm"]["height"] / vh
+    boxes = [r["bbox"] for r in design["regions"] if not r.get("hidden")]
+    if not boxes:
+        raise JobFailure("all_regions_hidden", "no visible regions")
+    w = (max(b[2] for b in boxes) - min(b[0] for b in boxes)) * sx
+    h = (max(b[3] for b in boxes) - min(b[1] for b in boxes)) * sy
+    return w, h
 
 
 def _compile(job: dict) -> dict:
@@ -148,9 +170,9 @@ def _compile(job: dict) -> dict:
         compiled = compile_svg(tmp_dir / "design.svg", tmp_dir / "out")
 
         _set(job["id"], status="validating", progress=75)
-        size = design["sizeMm"]
-        tol = max(1.5, 0.03 * max(size["width"], size["height"]))
-        expected = {"widthMm": size["width"], "heightMm": size["height"], "toleranceMm": tol}
+        exp_w, exp_h = expected_extent_mm(design)
+        tol = max(1.5, 0.03 * max(exp_w, exp_h))
+        expected = {"widthMm": round(exp_w, 2), "heightMm": round(exp_h, 2), "toleranceMm": tol}
         dst = validate_file(compiled.files[".dst"], expected)
         pes = validate_file(compiled.files[".pes"], expected)
         errors = dst.errors + [f"pes.{e}" for e in pes.errors]

@@ -16,7 +16,17 @@ export const JOB_STATUS: Record<string, string> = {
 
 const MESSAGES: Record<string, string> = {
   not_authenticated: "請先輸入使用者名稱登入。",
-  unsupported_file_type: "目前只支援 SVG 檔（PNG/JPG 將在下一階段支援）。",
+  unsupported_file_type: "只支援 SVG、PNG、JPG 檔。",
+  invalid_image: "無法讀取這張圖片，檔案可能已損毀。",
+  image_too_large: "圖片超過 4096 × 4096 像素。",
+  image_too_small: "圖片太小（至少 16 像素）。",
+  no_foreground: "去背後沒有剩下圖形；請改用「保留背景」或指定背景色。",
+  invalid_background_color: "背景色格式不正確。",
+  invalid_color_count: "色數需在 1–6 之間。",
+  unknown_region: "找不到這個區域，請重新整理。",
+  unknown_color: "找不到這個顏色，請重新整理。",
+  all_regions_hidden: "至少要保留一個可見區域。",
+  upload_not_ready: "原始檔不存在或尚未上傳完成。",
   file_too_large: "檔案超過 8 MB 上限。",
   missing_viewbox: "SVG 缺少 viewBox，無法判斷比例。請在設計軟體中重新匯出。",
   invalid_viewbox: "SVG 的 viewBox 數值異常。",
@@ -52,6 +62,8 @@ const WARNINGS: Record<string, string> = {
   many_colors: "超過 6 色，建議減少",
   many_jumps: "跳針偏多",
   color_blocks_differ_from_design: "換色段數與設計不同",
+  small_details_removed: "部分細小雜點已清除（小於 0.8 mm）",
+  thin_features_under_1mm: "有寬度小於 1 mm 的細線，刺繡可能不清楚",
 };
 export const warningLabel = (w: string) =>
   WARNINGS[w] ?? (w.startsWith("unsupported_element_removed:") ? `已移除不支援的元素 <${w.split(":")[1]}>` : w);

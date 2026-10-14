@@ -4,6 +4,36 @@
 
 - **Gate A — 核心可編譯能力**：固定 SVG → Ink/Stitch CLI → DST/PES → pyembroidery 重讀驗證 → 針跡預覽。
 - **Gate B — 完整使用流程**：網頁上傳 SVG → 建立專案 → 設定尺寸與布料 → 編譯 → 預覽 → 匯出工廠交件包 → 下載；含權限與檔案限制。
+- **Gate C — 圖片轉向量**：PNG/JPG → 去背 → Lab 分色 → 清除雜點 → VTracer → 區域 JSON → 填針／平針；結果不理想時可重新分析（色數、背景）或逐區改針法、改色、不繡。
+
+## Gate C：圖片轉向量
+
+| 步驟 | 做法（`services/worker/raster_import.py`） |
+|---|---|
+| 安全讀檔 | 檢查檔頭（PNG/JPEG）且需與副檔名、宣告類型一致；≤ 8 MB、≤ 4096 × 4096 px；套用 EXIF 方向後丟棄所有 metadata；預覽圖一律重新編碼 |
+| 去背 | 有透明度的 PNG 直接用 alpha；否則取影像邊緣中位色為背景（或使用者指定色），Lab 距離 ΔE > 12 視為圖形；也可選「保留背景」 |
+| 分色 | Lab 色彩空間 k-means；自動模式取「95 百分位誤差 ΔE < 10」的最小色數（1–6），避免小面積細節（如臉頰）被平均掉；也可指定色數 |
+| 清理 | 中值濾波去鋸齒雜色；小於 0.8 × 0.8 mm（依目標尺寸換算）的碎塊併入周圍顏色 |
+| 向量化 | 每個顏色一張互不重疊的遮罩，分別用 VTracer 描邊（不重疊＝不會重複繡）；面積大的顏色先繡、細節後繡 |
+| 接上既有流程 | 產生的 SVG 走與上傳 SVG 相同的清理與匯入（Design JSON），所以後續編譯、驗證、匯出完全共用 |
+
+**手動修正（失敗時的退路）**：專案頁可「以這些設定重新分析」（換色數／背景，產生新版本），或逐區改針法（填針／平針）、改線色、取消不繡；修改送出時一樣走 `baseRevision` 樂觀鎖。
+
+**驗證**（真實 Ink/Stitch）：
+
+| 測試圖 | 自動色數 | 區域 | 針數 | 尺寸 |
+|---|---|---|---|---|
+| `fixtures/raster/wordmark_chue.png`（單色字樣，含 É 的重音符號） | 1 | 5 | 2122 | 80.4 × 26.0 mm |
+| `fixtures/raster/two_color_transparent.png`（透明背景兩色） | 2 | 2 | 2773 | 70.4 × 41.2 mm |
+| `fixtures/raster/mascot.jpg`（JPEG 壓縮雜訊、少色吉祥物） | 3 | 7 | 7334 | 70.4 × 74.8 mm |
+
+測試圖由 `tools/make_raster_fixtures.py` 產生。測試：53 個（含 3 個真實 Ink/Stitch 圖片編譯，約 2 分 40 秒）。
+
+**已知限制**：
+- **編譯時間**：吉祥物約 100 秒（SVG 徽章約 35 秒）。剖析結果：主要花在 Ink/Stitch tatami 填針繞開孔洞（眼睛、臉頰）的移動路徑計算，另約兩成是每次重新讀取 150 個線色色票（Ink/Stitch 本身每個色票讀兩次）。目前引擎逾時 180 秒，更複雜的圖可能逾時；之後可考慮修補 Ink/Stitch 色票載入或保留每個專案的 Ink/Stitch 快取。
+- 細線（< 1 mm）只會發出警告，仍以填針處理；自動轉成中心線平針需要骨架化，留待 Gate D。
+- 區域改成平針時是「沿外框一圈」，內部會露出布料（顏色區域互不重疊）。
+- 漸層與照片式圖片不在 MVP 範圍；分色會把漸層切成色塊。
 
 ## Gate B：本機啟動
 
@@ -55,7 +85,7 @@ cd apps/web && npm install && npm run dev     # http://localhost:3000/studio
 
 ### Gate B 驗證
 
-- 35 個測試全部通過：API 完整流程、跨使用者存取、簽名連結竄改/過期、上傳限制、惡意 SVG（XXE、script、缺 viewBox）、revision 衝突、舊編譯不覆蓋、工作數上限、引擎失敗、Supabase JWT。
+- 當時 35 個測試全部通過：API 完整流程、跨使用者存取、簽名連結竄改/過期、上傳限制、惡意 SVG（XXE、script、缺 viewBox）、revision 衝突、舊編譯不覆蓋、工作數上限、引擎失敗、Supabase JWT。
 - 端對端（真實 Redis + RQ worker + Ink/Stitch + 瀏覽器）：上傳 `fixtures/uploads/two_color_badge.svg` → 70 mm 編譯（約 35 秒）→ 改 90 mm、針織棉 → 重新編譯 → 匯出 ZIP → 下載；實際針跡 90.0 × 90.0 mm、3549 針、3 色段。手機寬度無橫向捲動。
 
 ## Gate A（核心可編譯能力）

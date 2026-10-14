@@ -142,7 +142,8 @@ def test_upload_limits(client):
     pid = client.post("/api/v1/projects", json={"name": "x", "widthMm": 50}, headers=ALICE).json()["id"]
     req = lambda **kw: client.post(f"/api/v1/projects/{pid}/upload-url", headers=ALICE, json={
         "filename": "a.svg", "contentType": "image/svg+xml", "sizeBytes": 100, **kw})
-    assert req(contentType="image/png", filename="a.png").status_code == 415
+    assert req(contentType="image/gif", filename="a.gif").status_code == 415
+    assert req(contentType="image/png", filename="a.svg").status_code == 415  # type and extension must agree
     assert req(sizeBytes=9 * 1024 * 1024).status_code == 413
     u = req(sizeBytes=10).json()
     assert client.put(_path(u["uploadUrl"]), content=b"x" * 11).status_code == 413
@@ -228,3 +229,83 @@ def test_supabase_jwt(make_client):
     assert client.get("/api/v1/projects", headers=ALICE).status_code == 401  # dev header ignored
     expired = jwt.encode({**claims, "exp": int(time.time()) - 10}, secret, algorithm="HS256")
     assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {expired}"}).status_code == 401
+
+
+def _upload_file(client, headers, data: bytes, filename: str, content_type: str, width=70.0):
+    pid = client.post("/api/v1/projects", json={"name": filename, "widthMm": width}, headers=headers).json()["id"]
+    u = client.post(f"/api/v1/projects/{pid}/upload-url", headers=headers,
+                    json={"filename": filename, "contentType": content_type, "sizeBytes": len(data)}).json()
+    assert client.put(_path(u["uploadUrl"]), content=data).status_code == 204
+    job = client.post(f"/api/v1/projects/{pid}/analyze", json={"uploadId": u["uploadId"]}, headers=headers).json()
+    return pid, u["uploadId"], job
+
+
+RASTER = Path(__file__).resolve().parents[1] / "fixtures" / "raster"
+
+
+def test_raster_upload_previews_and_reanalyze(client):
+    pid, upload_id, job = _upload_file(client, ALICE, (RASTER / "mascot.jpg").read_bytes(), "mascot.jpg", "image/jpeg")
+    assert job["status"] == "ready", job
+    assert job["result"]["colors"] == 3 and job["result"]["raster"]["backgroundHex"]
+
+    links = client.get(f"/api/v1/projects/{pid}/previews?revision=1", headers=ALICE).json()
+    assert set(links) == {"source_preview", "quantized_preview"}
+    img = client.get(_path(links["quantized_preview"]))
+    assert img.status_code == 200 and img.headers["content-type"] == "image/png"
+    assert img.headers["content-disposition"] == "inline"
+    assert client.get(f"/api/v1/projects/{pid}/previews?revision=1", headers=BOB).status_code == 404
+
+    # An edit revision (no new analysis) still shows the analysis previews.
+    client.patch(f"/api/v1/projects/{pid}/design", json={"baseRevision": 1, "fabricPreset": "canvas"}, headers=ALICE)
+    assert set(client.get(f"/api/v1/projects/{pid}/previews?revision=2", headers=ALICE).json()) == set(links)
+
+    again = client.post(f"/api/v1/projects/{pid}/analyze", json={"uploadId": upload_id, "colors": 2}, headers=ALICE).json()
+    assert again["status"] == "ready" and again["revision"] == 3 and again["result"]["colors"] == 2
+    new_links = client.get(f"/api/v1/projects/{pid}/previews?revision=3", headers=ALICE).json()
+    assert new_links["quantized_preview"] != links["quantized_preview"]
+    comp = client.post(f"/api/v1/projects/{pid}/compile", json={"revision": 3}, headers=ALICE).json()
+    assert comp["status"] == "ready", comp
+
+
+def test_preview_token_cannot_download_factory_files(client):
+    pid, _, _ = _upload_file(client, ALICE, (RASTER / "two_color_transparent.png").read_bytes(), "a.png", "image/png")
+    client.post(f"/api/v1/projects/{pid}/compile", json={"revision": 1}, headers=ALICE)
+    dst = next(a for a in client.get(f"/api/v1/projects/{pid}", headers=ALICE).json()["artifacts"] if a["kind"] == "dst")
+    from services.core.signing import sign
+    token, _ = sign("preview", dst["id"], 60)
+    assert client.get(f"/api/v1/files/{token}").status_code == 404
+
+
+def test_region_and_palette_edits(client):
+    pid, job = upload(client, ALICE, SIMPLE_SVG)
+    d = client.get(f"/api/v1/projects/{pid}", headers=ALICE).json()["design"]
+    r1, r2 = d["regions"][0]["id"], d["regions"][1]["id"]
+    c1 = d["palette"][0]["id"]
+    res = client.patch(f"/api/v1/projects/{pid}/design", headers=ALICE, json={
+        "baseRevision": 1, "palette": [{"id": c1, "hex": "#112233"}],
+        "regions": [{"id": r1, "stitchType": "running"}, {"id": r2, "colorId": c1}]})
+    assert res.status_code == 200, res.text
+    d2 = res.json()["design"]
+    assert d2["palette"][0]["hex"] == "#112233"
+    assert d2["regions"][0]["stitchType"] == "running" and "runningStitchLengthMm" in d2["regions"][0]["params"]
+    assert d2["regions"][1]["colorId"] == c1
+    comp = client.post(f"/api/v1/projects/{pid}/compile", json={"revision": 2}, headers=ALICE).json()
+    assert comp["status"] == "ready", comp
+
+    bad = lambda body: client.patch(f"/api/v1/projects/{pid}/design", headers=ALICE, json={"baseRevision": 2, **body})
+    assert bad({"regions": [{"id": "nope", "hidden": True}]}).status_code == 422
+    assert bad({"regions": [{"id": r1, "colorId": "c99"}]}).status_code == 422
+    assert bad({"regions": [{"id": r1, "stitchType": "satin"}]}).status_code == 422
+    assert bad({"palette": [{"id": c1, "hex": "red"}]}).status_code == 422
+    assert bad({"regions": [{"id": r1, "hidden": True}, {"id": r2, "hidden": True}]}).status_code == 422
+    hidden = bad({"regions": [{"id": r1, "hidden": True}]})
+    assert hidden.status_code == 200
+    comp = client.post(f"/api/v1/projects/{pid}/compile", json={"revision": 3}, headers=ALICE).json()
+    assert comp["status"] == "ready" and comp["result"]["colorBlocks"] == 1
+
+
+def test_expected_extent_follows_visible_regions():
+    from services.worker.tasks import expected_extent_mm
+    design = {"geometry": {"viewBox": [0, 0, 100, 50]}, "sizeMm": {"width": 50, "height": 25},
+              "regions": [{"bbox": [0, 0, 60, 50]}, {"bbox": [60, 0, 100, 50], "hidden": True}]}
+    assert expected_extent_mm(design) == (30.0, 25.0)

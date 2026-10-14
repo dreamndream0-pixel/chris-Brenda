@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -23,9 +24,11 @@ from services.worker.tasks import save_revision
 router = APIRouter(prefix="/api/v1")
 MIN_MM, MAX_MM = SIZE_LIMITS_MM
 FabricPreset = str
-ALLOWED_UPLOAD_TYPES = {"image/svg+xml": ".svg"}
+ALLOWED_UPLOAD_TYPES = {"image/svg+xml": ".svg", "image/png": ".png", "image/jpeg": ".jpg"}
+ALLOWED_SUFFIXES = {".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+PREVIEWABLE = {"source_preview", "quantized_preview"}
 DOWNLOADABLE = {"export_zip", "dst", "pes", "design_svg", "spec_txt", "threadlist"}
-DOWNLOAD_TYPES = {".zip": "application/zip", ".dst": "application/octet-stream",
+DOWNLOAD_TYPES = {".zip": "application/zip", ".png": "image/png", ".dst": "application/octet-stream",
                   ".pes": "application/octet-stream", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8"}
 
 
@@ -47,6 +50,10 @@ class UploadRequest(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     uploadId: str
+    colors: int | None = Field(default=None, ge=1, le=6)       # raster only; None = auto
+    removeBackground: bool = True                              # raster only
+    backgroundHex: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    widthMm: float | None = Field(default=None, ge=MIN_MM, le=MAX_MM)
 
 
 class SizeMm(BaseModel):
@@ -54,11 +61,25 @@ class SizeMm(BaseModel):
     height: float | None = Field(default=None, ge=MIN_MM, le=MAX_MM)  # ignored while aspect is locked
 
 
+class RegionPatch(BaseModel):
+    id: str
+    stitchType: Literal["fill", "running"] | None = None
+    colorId: str | None = None
+    hidden: bool | None = None
+
+
+class PalettePatch(BaseModel):
+    id: str
+    hex: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+
+
 class DesignPatch(BaseModel):
     baseRevision: int
     sizeMm: SizeMm | None = None
     lockAspect: bool | None = None
     fabricPreset: FabricPreset | None = None
+    regions: list[RegionPatch] | None = Field(default=None, max_length=2000)
+    palette: list[PalettePatch] | None = Field(default=None, max_length=12)
 
 
 class RevisionRequest(BaseModel):
@@ -178,14 +199,15 @@ def get_project(project_id: str, user_id: str = Depends(current_user)):
 @router.post("/projects/{project_id}/upload-url")
 def create_upload_url(project_id: str, body: UploadRequest, user_id: str = Depends(current_user)):
     settings = get_settings()
-    if body.contentType not in ALLOWED_UPLOAD_TYPES or not body.filename.lower().endswith(".svg"):
-        raise HTTPException(415, "unsupported_file_type")  # PNG/JPG arrive with Gate C
+    suffix = "." + body.filename.lower().rsplit(".", 1)[-1] if "." in body.filename else ""
+    if body.contentType not in ALLOWED_UPLOAD_TYPES or ALLOWED_SUFFIXES.get(suffix) != body.contentType:
+        raise HTTPException(415, "unsupported_file_type")
     if body.sizeBytes > settings.max_upload_bytes:
         raise HTTPException(413, "file_too_large")
     upload_id = db.new_id()
     with db.get_engine().begin() as conn:
         _owned_project(conn, project_id, user_id)
-        key = object_key(user_id, project_id, "uploads", f"{upload_id}.svg")
+        key = object_key(user_id, project_id, "uploads", f"{upload_id}{ALLOWED_UPLOAD_TYPES[body.contentType]}")
         safe_name = re.sub(r"[^\w.\- ]", "_", body.filename)[:200]
         conn.execute(insert(db.uploads).values(id=upload_id, project_id=project_id, user_id=user_id,
                                                filename=safe_name, content_type=body.contentType,
@@ -225,9 +247,13 @@ def analyze(project_id: str, body: AnalyzeRequest, user_id: str = Depends(curren
         p = _owned_project(conn, project_id, user_id)
         up = conn.execute(select(db.uploads).where(db.uploads.c.id == body.uploadId,
                                                    db.uploads.c.project_id == project_id)).mappings().first()
-    if up is None or up["status"] != "uploaded":
+    if up is None or up["status"] not in ("uploaded", "used"):
         raise HTTPException(409, "upload_not_ready")
-    params = {"uploadId": body.uploadId, "widthMm": p["width_mm"], "heightMm": p["height_mm"]}
+    rerun = up["status"] == "used"
+    params = {"uploadId": body.uploadId, "widthMm": body.widthMm or p["width_mm"],
+              # A first analysis honours an unlocked height from project creation; re-runs keep the aspect.
+              "heightMm": None if rerun else p["height_mm"], "colors": body.colors,
+              "removeBackground": body.removeBackground, "backgroundHex": body.backgroundHex}
     return _create_job(user_id, project_id, "analyze", None, params)
 
 
@@ -258,6 +284,30 @@ def patch_design(project_id: str, body: DesignPatch, user_id: str = Depends(curr
             design["fabricPreset"] = body.fabricPreset
             for region in design["regions"]:
                 region["params"] = default_params(body.fabricPreset, region["stitchType"])
+        if body.palette:
+            by_id = {c["id"]: c for c in design["palette"]}
+            for c in body.palette:
+                if c.id not in by_id:
+                    raise HTTPException(422, "unknown_color")
+                by_id[c.id]["hex"] = c.hex.lower()
+        if body.regions:
+            regions = {r["id"]: r for r in design["regions"]}
+            colors = {c["id"] for c in design["palette"]}
+            for rp in body.regions:
+                region = regions.get(rp.id)
+                if region is None:
+                    raise HTTPException(422, "unknown_region")
+                if rp.colorId is not None:
+                    if rp.colorId not in colors:
+                        raise HTTPException(422, "unknown_color")
+                    region["colorId"] = rp.colorId
+                if rp.stitchType is not None and rp.stitchType != region["stitchType"]:
+                    region["stitchType"] = rp.stitchType
+                    region["params"] = default_params(design["fabricPreset"], rp.stitchType)
+                if rp.hidden is not None:
+                    region["hidden"] = rp.hidden
+            if all(r.get("hidden") for r in design["regions"]):
+                raise HTTPException(422, "all_regions_hidden")
         annotate_warnings(design)
         revision = save_revision(conn, p, design)
         design = conn.execute(select(db.revisions.c.design_json).where(
@@ -314,19 +364,43 @@ def get_download_url(project_id: str, artifact_id: str, user_id: str = Depends(c
     return {"url": f"{settings.public_api_url}/api/v1/files/{token}", "expiresAt": exp}
 
 
+@router.get("/projects/{project_id}/previews")
+def get_previews(project_id: str, revision: int, user_id: str = Depends(current_user)):
+    """Short-lived URLs for the re-encoded original and the colour-separation preview (raster uploads)."""
+    with db.get_engine().connect() as conn:
+        _owned_project(conn, project_id, user_id)
+        # Previews are made by the analysis that created the geometry; later edit revisions reuse them.
+        arts = conn.execute(select(db.artifacts.c.id, db.artifacts.c.kind).where(
+            db.artifacts.c.project_id == project_id, db.artifacts.c.revision <= revision,
+            db.artifacts.c.kind.in_(PREVIEWABLE)).order_by(db.artifacts.c.revision.desc())).all()
+    settings = get_settings()
+    out = {}
+    for art_id, kind in arts:
+        if kind in out:
+            continue
+        token, _ = sign("preview", art_id, ttl_s=settings.signed_url_ttl_s)
+        out[kind] = f"{settings.public_api_url}/api/v1/files/{token}"
+    return out
+
+
 @router.get("/files/{token}")
 def download(token: str):
     claims = verify(token, "download")
+    inline = False
+    if not claims:
+        claims = verify(token, "preview")
+        inline = True
     if not claims:
         raise HTTPException(403, "invalid_or_expired_link")
     with db.get_engine().connect() as conn:
         art = conn.execute(select(db.artifacts).where(db.artifacts.c.id == claims["s"])).mappings().first()
-    if art is None:
+    if art is None or (inline and art["kind"] not in PREVIEWABLE):
         raise HTTPException(404, "artifact_not_found")
     filename = art["storage_key"].rsplit("/", 1)[-1]
     suffix = "." + filename.rsplit(".", 1)[-1]
+    disposition = "inline" if inline else f'attachment; filename="{filename}"'
     return Response(get_storage().get(art["storage_key"]), media_type=DOWNLOAD_TYPES.get(suffix, "application/octet-stream"),
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                    headers={"Content-Disposition": disposition,
                              "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store",
                              "Content-Security-Policy": "default-src 'none'; sandbox"})
 
