@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 from lxml import etree
 from svgelements import Path
 
@@ -68,6 +69,50 @@ def _satin_attrs(p: dict, width_mm: float) -> dict[str, str]:
     }
 
 
+def _ring(sub: Path, n: int = 48) -> np.ndarray:
+    pts = sub.npoint(np.linspace(0, 1, n, endpoint=False))
+    return np.asarray(pts, dtype=float)
+
+
+def _inside(pt: np.ndarray, ring: np.ndarray) -> bool:
+    x, y = pt
+    xs, ys = ring[:, 0], ring[:, 1]
+    xn, yn = np.roll(xs, -1), np.roll(ys, -1)
+    crosses = (ys > y) != (yn > y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        xi = xs + (y - ys) * (xn - xs) / (yn - ys)
+    return bool(np.count_nonzero(crosses & (x < xi)) % 2)
+
+
+def split_components(d: str) -> list[str]:
+    """Split an even-odd fill path into its separate islands (each outline with its own holes).
+
+    Ink/Stitch joins the islands of one fill element with stitches or untrimmed jumps; as
+    separate elements each one ends in a trim, so no thread is left running across the fabric."""
+    subs = [Path(sub) for sub in Path(d).as_subpaths()]
+    subs = [sub for sub in subs if len(sub) and sub.length(error=1e-3) > 0]
+    if len(subs) < 2:
+        return [d]
+    rings = [_ring(sub) for sub in subs]
+    areas = [abs(float(np.dot(r[:, 0], np.roll(r[:, 1], -1)) - np.dot(r[:, 1], np.roll(r[:, 0], -1)))) / 2
+             for r in rings]
+    containers = [[j for j in range(len(subs)) if j != i and areas[j] > areas[i] and _inside(rings[i][0], rings[j])]
+                  for i in range(len(subs))]
+    outers = [i for i in range(len(subs)) if len(containers[i]) % 2 == 0]
+    if len(outers) < 2:
+        return [d]
+    groups: dict[int, list[int]] = {i: [i] for i in outers}
+    for i in range(len(subs)):
+        if i in groups:
+            continue
+        # A hole belongs to the smallest island around it.
+        owner = min((j for j in containers[i] if j in groups), key=lambda j: areas[j], default=None)
+        if owner is None:
+            return [d]
+        groups[owner].append(i)
+    return [" ".join(subs[k].d() for k in groups[i]) for i in outers]
+
+
 def _centerline(region: dict) -> dict | None:
     return (region.get("metrics") or {}).get("centerline")
 
@@ -123,23 +168,33 @@ def compile_design(design: dict) -> bytes:
         if stitch_type == "fill" and region.get("shape") == "line":
             raise CompileInputError("fill_needs_area", f"region {region['id']} is a line")
 
-        node = etree.SubElement(layer, f"{{{SVG_NS}}}path")
-        node.set("id", re.sub(r"[^\w-]", "_", str(region["id"]))[:64])
-        node.set("d", d)
-        if stitch_type == "fill":
-            rule = "evenodd" if region.get("fillRule") == "evenodd" else "nonzero"
-            node.set("style", f"fill:{hex_color};stroke:none;fill-rule:{rule}")
-            attrs = _fill_attrs(params)
-        elif stitch_type == "satin":
-            # Ink/Stitch turns a single stroke wider than its satin threshold into a satin column.
-            width_units = float(center["widthUnits"])
-            node.set("style", f"fill:none;stroke:{hex_color};stroke-width:{width_units:.6g};stroke-linecap:butt")
-            attrs = _satin_attrs(params, width_units * (sx + sy) / 2)
-        else:
-            stroke_w = RUNNING_STROKE_MM / max(min(sx, sy), 1e-9)
-            node.set("style", f"fill:none;stroke:{hex_color};stroke-width:{stroke_w:.6g}")
-            attrs = _running_attrs(params)
-        for key, value in attrs.items():
-            node.set(key, value)
+        base_id = re.sub(r"[^\w-]", "_", str(region["id"]))[:56]
+        parts = split_components(d) if stitch_type == "fill" else [d]
+        for index, part in enumerate(parts):
+            node = etree.SubElement(layer, f"{{{SVG_NS}}}path")
+            node.set("id", base_id if len(parts) == 1 else f"{base_id}_{index + 1}")
+            node.set("d", part)
+            _style(node, stitch_type, region, params, center, hex_color, sx, sy)
 
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def _style(node, stitch_type: str, region: dict, params: dict, center: dict | None, hex_color: str,
+           sx: float, sy: float) -> None:
+    if stitch_type == "fill":
+        rule = "evenodd" if region.get("fillRule") == "evenodd" else "nonzero"
+        node.set("style", f"fill:{hex_color};stroke:none;fill-rule:{rule}")
+        attrs = _fill_attrs(params)
+    elif stitch_type == "satin":
+        # Ink/Stitch turns a single stroke wider than its satin threshold into a satin column.
+        width_units = float(center["widthUnits"])
+        node.set("style", f"fill:none;stroke:{hex_color};stroke-width:{width_units:.6g};stroke-linecap:butt")
+        attrs = _satin_attrs(params, width_units * (sx + sy) / 2)
+    else:
+        stroke_w = RUNNING_STROKE_MM / max(min(sx, sy), 1e-9)
+        node.set("style", f"fill:none;stroke:{hex_color};stroke-width:{stroke_w:.6g}")
+        attrs = _running_attrs(params)
+    # Cut the thread after every element instead of leaving a jump or travel stitch between them.
+    attrs[_ink("trim_after")] = "True"
+    for key, value in attrs.items():
+        node.set(key, value)
