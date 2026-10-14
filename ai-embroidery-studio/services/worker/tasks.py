@@ -54,6 +54,9 @@ def run_job(job_id: str) -> None:
         result = handler(dict(job))
         _set(job_id, status="ready", progress=100, result=result)
     except (JobFailure, ImportError_, CompileInputError, EngineError, AiError) as exc:
+        if getattr(exc, "stderr", ""):
+            # Engine output stays in the server log; users only see the error code.
+            print(f"job {job_id} {exc.code}: engine stderr follows\n{exc.stderr[-4000:]}", flush=True)
         _set(job_id, status="failed", error_code=exc.code, error_message=str(exc)[:2000])
     except Exception as exc:  # noqa: BLE001 - never leave a job stuck in a running state
         traceback.print_exc()
