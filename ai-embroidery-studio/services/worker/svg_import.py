@@ -173,7 +173,7 @@ def _visible(el) -> bool:
 
 
 def import_svg(data: bytes, width_mm: float, fabric: str = "woven_cotton",
-               height_mm: float | None = None) -> dict:
+               height_mm: float | None = None, fit_height_mm: float | None = None) -> dict:
     """Return a revision-1 Design JSON for an uploaded SVG."""
     clean, warnings = sanitize_svg(data)
     svg = SVG.parse(BytesIO(clean), reify=True)
@@ -245,6 +245,9 @@ def import_svg(data: bytes, width_mm: float, fabric: str = "woven_cotton",
 
     lo, hi = SIZE_LIMITS_MM
     x0, y0, bw, bh = float(x0), float(y0), float(bw), float(bh)  # svgelements may return numpy floats
+    if fit_height_mm and height_mm is None:
+        # Locked aspect sized by height: derive the width from the artwork's own proportions.
+        width_mm = float(fit_height_mm) * bw / bh
     width_mm = min(max(float(width_mm), lo), hi)
     if height_mm is None:
         height_mm = width_mm * bh / bw

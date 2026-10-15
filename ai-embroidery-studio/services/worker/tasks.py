@@ -129,10 +129,12 @@ def _analyze(job: dict) -> dict:
                              background_hex=params.get("backgroundHex"),
                              background_scope=params.get("backgroundScope", "edge"),
                              detail_mode=params.get("detailMode", "preserve"))
-        design, thumb, quantized = import_raster(data, width, project["fabric_preset"], opts, params.get("heightMm"))
+        design, thumb, quantized = import_raster(data, width, project["fabric_preset"], opts, params.get("heightMm"),
+                                                 params.get("fitHeightMm"))
         previews = {"source_preview": thumb, "quantized_preview": quantized}
     else:
-        design = import_svg(data, width_mm=width, fabric=project["fabric_preset"], height_mm=params.get("heightMm"))
+        design = import_svg(data, width_mm=width, fabric=project["fabric_preset"], height_mm=params.get("heightMm"),
+                            fit_height_mm=params.get("fitHeightMm"))
     design["lockAspect"] = params.get("lockAspect", True)
     design["source"] = {"uploadId": upload["id"], "filename": upload["filename"]}
     _set(job["id"], status="planning", progress=75)

@@ -16,6 +16,8 @@ export default function NewProjectPage() {
   const [widthText, setWidthText] = useState("50");
   const [heightText, setHeightText] = useState("30");
   const width = Number(widthText), height = Number(heightText);
+  // With the aspect locked only one side can be given; the other follows the artwork after analysis.
+  const [sizeBy, setSizeBy] = useState<"width" | "height">("width");
   const [progress, setProgress] = useState<Progress | null>(null);
   const [lock, setLock] = useState(true);
   const [fabric, setFabric] = useState<FabricPreset>("woven_cotton");
@@ -52,18 +54,20 @@ export default function NewProjectPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!file) return;
-    if (!(width >= 5 && width <= 300) || (!lock && !(height >= 5 && height <= 300))) { setError("寬高需在 5–300 mm 之間。"); return; }
+    const ok = (v: number) => v >= 5 && v <= 300;
+    const byHeight = lock && sizeBy === "height";
+    if (lock ? !ok(byHeight ? height : width) : !(ok(width) && ok(height))) { setError("寬高需在 5–300 mm 之間。"); return; }
     setError(null);
     setProgress(null);
     try {
       // Free hosting sleeps when idle; the first request can wait about a minute for it to wake up.
       step("連線伺服器、建立專案", 2, "伺服器閒置後第一次使用需要喚醒，可能多等約 1 分鐘。");
-      const project = await api.createProject({ name: name.trim() || file.name, widthMm: width,
+      const project = await api.createProject({ name: name.trim() || file.name, widthMm: byHeight ? height : width,
         heightMm: lock ? undefined : height, lockAspect: lock, fabricPreset: fabric });
       step("上傳檔案", 6);
       const up = await api.uploadUrl(project.id, file);
       await api.putUpload(up.uploadUrl, file, up.headers);
-      const opts = rasterFile ? toAnalyzeOptions(raster) : {};
+      const opts = { ...(rasterFile ? toAnalyzeOptions(raster) : {}), ...(byHeight ? { fitHeightMm: height } : {}) };
       step(JOB_STATUS.queued, 9);
       const job = await waitForJob(await api.analyze(project.id, up.uploadId, opts), j => step(
         jobLabel(j),
@@ -106,18 +110,20 @@ export default function NewProjectPage() {
         <fieldset className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
           <legend className="mb-1 text-sm">最終刺繡尺寸</legend>
           <label className="text-sm">寬（mm）
-            <input type="text" inputMode="decimal" className="field mt-1" value={widthText} required
-              onChange={e => setWidthText(e.target.value.replace(/[^\d.]/g, ""))} />
+            <input type="text" inputMode="decimal" className="field mt-1"
+              value={lock && sizeBy === "height" ? "" : widthText} placeholder={lock && sizeBy === "height" ? "依比例" : ""}
+              onChange={e => { setWidthText(e.target.value.replace(/[^\d.]/g, "")); setSizeBy("width"); }} />
           </label>
           <label className="text-sm">高（mm）
-            <input type="text" inputMode="decimal" className="field mt-1" value={lock ? "" : heightText} disabled={lock}
-              onChange={e => setHeightText(e.target.value.replace(/[^\d.]/g, ""))} placeholder={lock ? "依比例" : ""} />
+            <input type="text" inputMode="decimal" className="field mt-1"
+              value={lock && sizeBy === "width" ? "" : heightText} placeholder={lock && sizeBy === "width" ? "依比例" : ""}
+              onChange={e => { setHeightText(e.target.value.replace(/[^\d.]/g, "")); setSizeBy("height"); }} />
           </label>
           <label className="col-span-2 flex items-center gap-2 text-sm sm:col-span-1 sm:pb-2">
             <input type="checkbox" checked={lock} onChange={e => setLock(e.target.checked)} />鎖定比例
           </label>
         </fieldset>
-        {lock && <p className="text-xs text-muted">鎖定比例時，高度會依圖形比例自動計算。</p>}
+        {lock && <p className="text-xs text-muted">鎖定比例時填寬或高其中一個，另一個依圖形比例自動計算。</p>}
         <label className="block text-sm">主要布料
           <select className="field mt-1" value={fabric} onChange={e => setFabric(e.target.value as FabricPreset)}>
             {FABRICS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}

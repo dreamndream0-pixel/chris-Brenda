@@ -455,3 +455,15 @@ def test_detail_level_is_saved_and_jobs_have_times(client):
     assert res.status_code == 200 and res.json()["design"]["detailLevel"] == "ultra"
     bad = client.patch(f"/api/v1/projects/{pid}/design", json={"baseRevision": 2, "detailLevel": "max"}, headers=ALICE)
     assert bad.status_code == 422
+
+
+def test_analyze_can_size_by_height(client):
+    pid, job = upload(client, ALICE, SIMPLE_SVG)
+    design = client.get(f"/api/v1/projects/{pid}", headers=ALICE).json()["design"]
+    _, _, vw, vh = design["geometry"]["viewBox"]
+    upload_id = design["source"]["uploadId"]
+    res = client.post(f"/api/v1/projects/{pid}/analyze", json={"uploadId": upload_id, "fitHeightMm": 40}, headers=ALICE)
+    assert res.json()["status"] == "ready", res.json()
+    size = client.get(f"/api/v1/projects/{pid}", headers=ALICE).json()["design"]["sizeMm"]
+    assert abs(size["height"] - 40) < 0.05
+    assert abs(size["width"] - 40 * vw / vh) < 0.5

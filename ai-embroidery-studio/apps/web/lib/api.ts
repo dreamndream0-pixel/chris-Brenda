@@ -36,7 +36,7 @@ export interface Design {
 }
 export interface AppConfig { aiEnabled: boolean; aiModel: string | null; authMode: "dev" | "supabase" }
 export interface AnalyzeOptions { colors?: number | null; removeBackground?: boolean; backgroundHex?: string | null;
-  backgroundScope?: "edge" | "all"; detailMode?: ContourDetail; widthMm?: number }
+  backgroundScope?: "edge" | "all"; detailMode?: ContourDetail; widthMm?: number; fitHeightMm?: number }
 export interface RegionPatch { id: string; stitchType?: StitchType; colorId?: string; hidden?: boolean }
 export interface Job {
   jobId: string; projectId: string; kind: "analyze" | "compile" | "export" | "ai_plan"; revision: number | null;

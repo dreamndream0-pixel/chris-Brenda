@@ -100,6 +100,14 @@ export default function ProjectPage() {
   const visibleCount = design.regions.filter(reg => !regionValue(reg.id, "hidden", !!reg.hidden)).length;
   const aspect = design.geometry.viewBox[3] / design.geometry.viewBox[2];
   const shownHeight = lock ? Math.round(width * aspect * 100) / 100 : height;
+  // With the aspect locked, typing either side fills in the other one.
+  const editSize = (side: "w" | "h", raw: string, forceLock = false) => {
+    const text = raw.replace(/[^\d.]/g, "");
+    const v = Number(text);
+    const other = (x: number) => (text && Number.isFinite(x) && x > 0 ? String(Math.round(x * 100) / 100) : "");
+    if (side === "w") { setWidthText(text); if (lock || forceLock) setHeightText(other(v * aspect)); }
+    else { setHeightText(text); if (lock) setWidthText(other(v / aspect)); }
+  };
   const inRange = (v: number) => Number.isFinite(v) && v >= 5 && v <= 300;
   const sizeOk = inRange(width) && inRange(shownHeight);
   const compiled = project.compiledRevision;
@@ -207,19 +215,19 @@ export default function ProjectPage() {
             <div className="grid grid-cols-2 gap-2">
               <label className="text-sm">寬（mm）
                 <input type="text" inputMode="decimal" className="field mt-1" value={widthText}
-                  onChange={e => setWidthText(e.target.value.replace(/[^\d.]/g, ""))} />
+                  onChange={e => editSize("w", e.target.value)} />
               </label>
               <label className="text-sm">高（mm）
-                <input type="text" inputMode="decimal" className="field mt-1" disabled={lock}
-                  value={lock ? (inRange(width) ? String(shownHeight) : "") : heightText}
-                  onChange={e => setHeightText(e.target.value.replace(/[^\d.]/g, ""))} />
+                <input type="text" inputMode="decimal" className="field mt-1" value={heightText}
+                  onChange={e => editSize("h", e.target.value)} />
               </label>
             </div>
             {!sizeOk && <p className="text-xs text-bad">寬高需在 5–300 mm 之間。</p>}
             {sizeOk && Math.min(width, shownHeight) < 50 && (
               <p className="text-xs text-warn">小於 50 mm 時細字和細線容易糊掉；需要細節請放大到 60 mm 以上。</p>
             )}
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={lock} onChange={e => { setLock(e.target.checked); setHeightText(String(shownHeight)); }} />鎖定比例</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={lock} onChange={e => { setLock(e.target.checked); if (e.target.checked) editSize("w", widthText, true); }} />鎖定比例</label>
+            {lock && <p className="text-xs text-muted">填寬或高其中一個，另一個依圖形比例自動計算。</p>}
             <label className="block text-sm">布料
               <select className="field mt-1" value={fabric} onChange={e => setFabric(e.target.value as FabricPreset)}>
                 {FABRICS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}

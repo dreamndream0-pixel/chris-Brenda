@@ -236,7 +236,8 @@ def _thickness_mm(mask: np.ndarray, px_per_mm: float) -> float:
     return 2 * float(peak[1:].min()) / px_per_mm
 
 
-def raster_to_svg(data: bytes, width_mm: float, opts: RasterOptions) -> tuple[bytes, dict, np.ndarray, np.ndarray]:
+def raster_to_svg(data: bytes, width_mm: float, opts: RasterOptions,
+                  fit_height_mm: float | None = None) -> tuple[bytes, dict, np.ndarray, np.ndarray]:
     """Return (traced SVG, info, original RGBA thumbnail, quantised RGBA preview)."""
     rgba = _resize(load_image(data))
     h, w = rgba.shape[:2]
@@ -253,7 +254,11 @@ def raster_to_svg(data: bytes, width_mm: float, opts: RasterOptions) -> tuple[by
     lab = _to_lab(rgba[..., :3].reshape(-1, 3))
     fg_flat = fg.reshape(-1)
     cols = np.nonzero(fg.any(axis=0))[0]
-    px_per_mm = (cols[-1] - cols[0] + 1) / max(width_mm, 1)
+    if fit_height_mm:
+        rows = np.nonzero(fg.any(axis=1))[0]
+        px_per_mm = (rows[-1] - rows[0] + 1) / max(fit_height_mm, 1)
+    else:
+        px_per_mm = (cols[-1] - cols[0] + 1) / max(width_mm, 1)
     min_feature = DETAIL_MODES[opts.detail_mode]
     min_area = max(2, int(np.ceil((min_feature * px_per_mm) ** 2)))
     labels_fg, centers = quantize(lab[fg_flat], opts.colors, fg, min_area)
@@ -302,10 +307,10 @@ def raster_to_svg(data: bytes, width_mm: float, opts: RasterOptions) -> tuple[by
 
 
 def import_raster(data: bytes, width_mm: float, fabric: str, opts: RasterOptions,
-                  height_mm: float | None = None) -> tuple[dict, bytes, bytes]:
+                  height_mm: float | None = None, fit_height_mm: float | None = None) -> tuple[dict, bytes, bytes]:
     """Return (Design JSON, original thumbnail PNG, quantised preview PNG)."""
-    svg, info, rgba, preview = raster_to_svg(data, width_mm, opts)
-    design = import_svg(svg, width_mm, fabric, height_mm)
+    svg, info, rgba, preview = raster_to_svg(data, width_mm, opts, fit_height_mm)
+    design = import_svg(svg, width_mm, fabric, height_mm, fit_height_mm)
     design["warnings"] = sorted(set(design["warnings"]) | set(info.pop("warnings")))
     design["raster"] = info
     return design, _png(rgba, 800), _png(preview, 800)

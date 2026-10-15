@@ -98,3 +98,12 @@ def test_manual_background_color():
     design, *_ = import_raster(_png(img), 50, "woven_cotton", RasterOptions(background_hex="#336699"))
     assert any(_hex_close(c["hex"], "#fac800") for c in design["palette"])
     assert not any(_hex_close(c["hex"], "#336699", 15) for c in design["palette"])
+
+
+def test_size_by_height_derives_width():
+    data = (Path(__file__).parent.parent / "fixtures/raster/mascot.jpg").read_bytes()
+    by_width, _, _ = import_raster(data, 60, "woven_cotton", RasterOptions())
+    by_height, _, _ = import_raster(data, 50, "woven_cotton", RasterOptions(), fit_height_mm=60)
+    aspect = by_width["sizeMm"]["width"] / by_width["sizeMm"]["height"]
+    assert abs(by_height["sizeMm"]["height"] - 60) < 0.05
+    assert abs(by_height["sizeMm"]["width"] - 60 * aspect) < 1.0

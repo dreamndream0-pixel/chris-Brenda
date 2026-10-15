@@ -61,6 +61,8 @@ class AnalyzeRequest(BaseModel):
     backgroundScope: Literal["edge", "all"] = "edge"
     detailMode: Literal["preserve", "balanced", "clean"] = "preserve"
     widthMm: float | None = Field(default=None, ge=MIN_MM, le=MAX_MM)
+    # Locked aspect sized by height: the width follows from the artwork (overrides widthMm).
+    fitHeightMm: float | None = Field(default=None, ge=MIN_MM, le=MAX_MM)
 
 
 class SizeMm(BaseModel):
@@ -301,7 +303,8 @@ def analyze(project_id: Id, body: AnalyzeRequest, user_id: str = Depends(current
               # A first analysis honours an unlocked height from project creation; re-runs keep the aspect.
               "heightMm": None if rerun else p["height_mm"], "colors": body.colors,
               "removeBackground": body.removeBackground, "backgroundHex": body.backgroundHex,
-              "backgroundScope": body.backgroundScope, "detailMode": body.detailMode}
+              "backgroundScope": body.backgroundScope, "detailMode": body.detailMode,
+              "fitHeightMm": body.fitHeightMm}
     return _create_job(user_id, project_id, "analyze", None, params)
 
 
