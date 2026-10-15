@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from datetime import timezone
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
@@ -82,6 +83,7 @@ class DesignPatch(BaseModel):
     sizeMm: SizeMm | None = None
     lockAspect: bool | None = None
     fabricPreset: FabricPreset | None = None
+    detailLevel: Literal["standard", "fine", "ultra"] | None = None
     regions: list[RegionPatch] | None = Field(default=None, max_length=2000)
     palette: list[PalettePatch] | None = Field(default=None, max_length=12)
 
@@ -118,7 +120,16 @@ def _project_out(p: dict) -> dict:
 def _job_out(j: dict) -> dict:
     return {"jobId": j["id"], "projectId": j["project_id"], "kind": j["kind"], "revision": j["revision"],
             "status": j["status"], "progress": j["progress"], "errorCode": j["error_code"],
-            "errorMessage": j["error_message"], "result": j["result"]}
+            "errorMessage": j["error_message"], "result": j["result"],
+            "createdAt": _iso(j.get("created_at")), "updatedAt": _iso(j.get("updated_at"))}
+
+
+def _iso(value) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:  # SQLite drops the zone; timestamps are written in UTC
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
 
 
 def _create_job(user_id: str, project_id: Id, kind: str, revision: int | None, params: dict | None = None) -> dict:
@@ -318,6 +329,8 @@ def patch_design(project_id: Id, body: DesignPatch, user_id: str = Depends(curre
             design["fabricPreset"] = body.fabricPreset
             for region in design["regions"]:
                 region["params"] = default_params(body.fabricPreset, region["stitchType"])
+        if body.detailLevel is not None:
+            design["detailLevel"] = body.detailLevel
         if body.palette:
             by_id = {c["id"]: c for c in design["palette"]}
             for c in body.palette:

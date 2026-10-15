@@ -11,6 +11,7 @@ export interface Project {
   colorCount: number | null; stitchCount: number | null; createdAt: string; updatedAt: string;
 }
 export type StitchType = "fill" | "running" | "satin";
+export type DetailLevel = "standard" | "fine" | "ultra";
 export interface RegionPlan {
   source: "rules" | "ai"; suggested: StitchType; applied: StitchType; reason: string; needsReview: boolean;
   confidence: number | null; aiReason: string | null; override: string | null; manual?: boolean;
@@ -19,10 +20,11 @@ export interface Region {
   id: string; name: string; colorId: string; order: number; stitchType: StitchType;
   params: Record<string, number | boolean>; warnings: string[]; hidden?: boolean;
   shape?: "area" | "line"; runningPath?: "centerline" | "outline"; plan?: RegionPlan;
+  svgPath: string; bbox?: [number, number, number, number]; strokeWidthUnits?: number;
 }
 export interface Design {
   schemaVersion: 1; projectId: string; revision: number; sizeMm: { width: number; height: number };
-  lockAspect: boolean; fabricPreset: FabricPreset; geometry: { viewBox: [number, number, number, number] };
+  lockAspect: boolean; fabricPreset: FabricPreset; detailLevel?: DetailLevel; geometry: { viewBox: [number, number, number, number] };
   palette: { id: string; hex: string; threadCode: string | null }[]; regions: Region[]; warnings: string[];
   source?: { filename: string; uploadId: string };
   raster?: { pixels: [number, number]; colors: string[]; backgroundHex: string | null; autoColors: boolean };
@@ -33,9 +35,9 @@ export interface AppConfig { aiEnabled: boolean; aiModel: string | null; authMod
 export interface AnalyzeOptions { colors?: number | null; removeBackground?: boolean; backgroundHex?: string | null; widthMm?: number }
 export interface RegionPatch { id: string; stitchType?: StitchType; colorId?: string; hidden?: boolean }
 export interface Job {
-  jobId: string; projectId: string; kind: "analyze" | "compile" | "export"; revision: number | null;
+  jobId: string; projectId: string; kind: "analyze" | "compile" | "export" | "ai_plan"; revision: number | null;
   status: JobStatus; progress: number; errorCode: string | null; errorMessage: string | null;
-  result: Record<string, unknown> | null;
+  result: Record<string, unknown> | null; createdAt?: string | null; updatedAt?: string | null;
 }
 export interface Artifact { id: string; kind: string; revision: number; sizeBytes: number; createdAt: string }
 export interface ProjectDetail {
@@ -94,7 +96,7 @@ export const api = {
   previews: (id: string, revision: number) =>
     request<Partial<Record<"source_preview" | "quantized_preview", string>>>(`/api/v1/projects/${id}/previews?revision=${revision}`),
   patchDesign: (id: string, b: { baseRevision: number; sizeMm?: { width: number; height?: number }; lockAspect?: boolean;
-    fabricPreset?: FabricPreset; regions?: RegionPatch[]; palette?: { id: string; hex: string }[] }) =>
+    fabricPreset?: FabricPreset; detailLevel?: DetailLevel; regions?: RegionPatch[]; palette?: { id: string; hex: string }[] }) =>
     request<{ revision: number; design: Design }>(`/api/v1/projects/${id}/design`, { method: "PATCH", body: json(b) }),
   compile: (id: string, revision: number) => request<Job>(`/api/v1/projects/${id}/compile`, { method: "POST", body: json({ revision }) }),
   exportZip: (id: string, revision: number) => request<Job>(`/api/v1/projects/${id}/exports`, { method: "POST", body: json({ revision }) }),

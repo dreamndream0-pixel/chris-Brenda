@@ -3,9 +3,24 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import RasterOptionsFields, { DEFAULT_RASTER, toAnalyzeOptions, type RasterChoice } from "@/components/RasterOptionsFields";
+import JobProgress, { type Progress } from "@/components/JobProgress";
+import RegionMap, { RegionThumb } from "@/components/RegionMap";
 import StitchCanvas from "@/components/StitchCanvas";
-import { api, ApiError, waitForJob, type AppConfig, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches, type StitchType } from "@/lib/api";
-import { errorMessage, FABRICS, fabricLabel, JOB_STATUS, planReason, PROJECT_STATUS, STITCH_LABEL, warningLabel } from "@/lib/labels";
+import { api, ApiError, waitForJob, type AppConfig, type DetailLevel, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches, type StitchType } from "@/lib/api";
+import { DETAIL_LEVELS, errorMessage, FABRICS, fabricLabel, JOB_STATUS, planReason, PROJECT_STATUS, STITCH_LABEL, warningLabel } from "@/lib/labels";
+
+const DETAIL_COST: Record<DetailLevel, number> = { standard: 1, fine: 1.15, ultra: 1.35 };
+
+// Expected compile time from this project's last successful compile, scaled by stitched area and detail.
+function estimateCompileS(jobs: Job[], widthMm: number, heightMm: number, detail: DetailLevel, prevDetail: DetailLevel): number | null {
+  const last = jobs.find(j => j.kind === "compile" && j.status === "ready" && j.createdAt && j.updatedAt && j.result);
+  if (!last) return null;
+  const took = (Date.parse(last.updatedAt!) - Date.parse(last.createdAt!)) / 1000;
+  const r = last.result as { widthMm?: number; heightMm?: number };
+  if (!(took > 0) || !r.widthMm || !r.heightMm) return null;
+  const scale = (widthMm * heightMm) / (r.widthMm * r.heightMm);
+  return Math.max(5, took * scale * DETAIL_COST[detail] / DETAIL_COST[prevDetail]);
+}
 
 const DOWNLOADS: { kind: string; label: string }[] = [
   { kind: "export_zip", label: "工廠交件 ZIP" },
@@ -19,8 +34,12 @@ export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [stitches, setStitches] = useState<Stitches | null>(null);
-  const [width, setWidth] = useState(0);
-  const [height, setHeight] = useState(0);
+  // Text, not numbers: a cleared number field would otherwise snap to "0" and typing gives "08".
+  const [widthText, setWidthText] = useState("");
+  const [heightText, setHeightText] = useState("");
+  const [level, setLevel] = useState<DetailLevel>("standard");
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   const [lock, setLock] = useState(true);
   const [fabric, setFabric] = useState<FabricPreset>("woven_cotton");
   const [busy, setBusy] = useState<string | null>(null);
@@ -40,7 +59,8 @@ export default function ProjectPage() {
       setDetail(d);
       setRegionEdits({}); setPaletteEdits({});
       if (d.design) {
-        setWidth(d.design.sizeMm.width); setHeight(d.design.sizeMm.height);
+        setWidthText(String(d.design.sizeMm.width)); setHeightText(String(d.design.sizeMm.height));
+        setLevel(d.design.detailLevel ?? "standard");
         setLock(d.design.lockAspect); setFabric(d.design.fabricPreset);
         const r = d.design.raster;
         if (r) {
@@ -64,8 +84,11 @@ export default function ProjectPage() {
 
   const regionPatches: RegionPatch[] = Object.entries(regionEdits).map(([rid, e]) => ({ id: rid, ...e }));
   const palettePatches = Object.entries(paletteEdits).map(([cid, hex]) => ({ id: cid, hex }));
+  const width = Number(widthText), height = Number(heightText);
+  const savedLevel = design.detailLevel ?? "standard";
   const dirty = width !== design.sizeMm.width || (!lock && height !== design.sizeMm.height)
-    || lock !== design.lockAspect || fabric !== design.fabricPreset || regionPatches.length > 0 || palettePatches.length > 0;
+    || lock !== design.lockAspect || fabric !== design.fabricPreset || level !== savedLevel
+    || regionPatches.length > 0 || palettePatches.length > 0;
   const regionValue = <K extends keyof Omit<RegionPatch, "id">>(rid: string, key: K, fallback: NonNullable<RegionPatch[K]>) =>
     (regionEdits[rid]?.[key] ?? fallback) as NonNullable<RegionPatch[K]>;
   const editRegion = (rid: string, patch: Omit<RegionPatch, "id">) =>
@@ -73,6 +96,8 @@ export default function ProjectPage() {
   const visibleCount = design.regions.filter(reg => !regionValue(reg.id, "hidden", !!reg.hidden)).length;
   const aspect = design.geometry.viewBox[3] / design.geometry.viewBox[2];
   const shownHeight = lock ? Math.round(width * aspect * 100) / 100 : height;
+  const inRange = (v: number) => Number.isFinite(v) && v >= 5 && v <= 300;
+  const sizeOk = inRange(width) && inRange(shownHeight);
   const compiled = project.compiledRevision;
   const stale = compiled !== null && compiled !== project.currentRevision;
   const colors = Object.fromEntries(design.palette.map(c => [c.id, paletteEdits[c.id] ?? c.hex]));
@@ -82,25 +107,37 @@ export default function ProjectPage() {
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label); setError(null);
     try { await fn(); } catch (e) { setError(errorMessage(e instanceof ApiError ? e.code : "unknown")); }
-    finally { setBusy(null); }
+    finally { setBusy(null); setProgress(null); }
+  };
+
+  // Follow a job: button label plus progress bar.
+  const track = (estimateS: number | null = null) => {
+    const startedAt = Date.now();
+    setProgress({ label: JOB_STATUS.queued, percent: 0, startedAt, estimateS });
+    return (j: Job) => {
+      const label = JOB_STATUS[j.status] ?? j.status;
+      setBusy(label);
+      setProgress({ label, percent: j.progress, startedAt, estimateS });
+    };
   };
 
   const saveAndCompile = () => run("儲存設定", async () => {
     let revision = project.currentRevision;
     if (dirty) {
-      const res = await api.patchDesign(id, { baseRevision: revision, lockAspect: lock, fabricPreset: fabric,
+      const res = await api.patchDesign(id, { baseRevision: revision, lockAspect: lock, fabricPreset: fabric, detailLevel: level,
         sizeMm: { width, height: lock ? undefined : height },
         regions: regionPatches.length ? regionPatches : undefined, palette: palettePatches.length ? palettePatches : undefined });
       revision = res.revision;
     }
     setBusy("排隊中");
-    const job = await waitForJob(await api.compile(id, revision), j => setBusy(JOB_STATUS[j.status] ?? j.status));
+    const onUpdate = track(estimateCompileS(detail.jobs, width, shownHeight, level, savedLevel));
+    const job = await waitForJob(await api.compile(id, revision), onUpdate);
     if (job.status === "failed") setError(errorMessage(job.errorCode));
     await load();
   });
 
   const aiReview = () => run("AI 分析中", async () => {
-    const job = await waitForJob(await api.aiPlan(id, project.currentRevision), j => setBusy(JOB_STATUS[j.status] ?? j.status));
+    const job = await waitForJob(await api.aiPlan(id, project.currentRevision), track());
     if (job.status === "failed") { setError(errorMessage(job.errorCode)); return; }
     await load();
   });
@@ -108,14 +145,14 @@ export default function ProjectPage() {
   const reanalyze = () => run("重新分析", async () => {
     if (!design.source?.uploadId) return;
     const job = await waitForJob(await api.analyze(id, design.source.uploadId, { ...toAnalyzeOptions(raster), widthMm: width }),
-      j => setBusy(JOB_STATUS[j.status] ?? j.status));
+      track());
     if (job.status === "failed") { setError(errorMessage(job.errorCode)); return; }
     await load();
   });
 
   const exportZip = () => run("打包中", async () => {
     if (compiled === null) return;
-    const job = await waitForJob(await api.exportZip(id, compiled), j => setBusy(JOB_STATUS[j.status] ?? j.status));
+    const job = await waitForJob(await api.exportZip(id, compiled), track());
     if (job.status === "failed") { setError(errorMessage(job.errorCode)); return; }
     await load();
   });
@@ -166,22 +203,36 @@ export default function ProjectPage() {
             <h2 className="font-medium">尺寸與布料</h2>
             <div className="grid grid-cols-2 gap-2">
               <label className="text-sm">寬（mm）
-                <input type="number" className="field mt-1" min={5} max={300} step={0.5} value={width} onChange={e => setWidth(+e.target.value)} />
+                <input type="text" inputMode="decimal" className="field mt-1" value={widthText}
+                  onChange={e => setWidthText(e.target.value.replace(/[^\d.]/g, ""))} />
               </label>
               <label className="text-sm">高（mm）
-                <input type="number" className="field mt-1" min={5} max={300} step={0.5} value={shownHeight} disabled={lock} onChange={e => setHeight(+e.target.value)} />
+                <input type="text" inputMode="decimal" className="field mt-1" disabled={lock}
+                  value={lock ? (inRange(width) ? String(shownHeight) : "") : heightText}
+                  onChange={e => setHeightText(e.target.value.replace(/[^\d.]/g, ""))} />
               </label>
             </div>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={lock} onChange={e => { setLock(e.target.checked); setHeight(shownHeight); }} />鎖定比例</label>
+            {!sizeOk && <p className="text-xs text-bad">寬高需在 5–300 mm 之間。</p>}
+            {sizeOk && Math.min(width, shownHeight) < 50 && (
+              <p className="text-xs text-warn">小於 50 mm 時細字和細線容易糊掉；需要細節請放大到 60 mm 以上。</p>
+            )}
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={lock} onChange={e => { setLock(e.target.checked); setHeightText(String(shownHeight)); }} />鎖定比例</label>
             <label className="block text-sm">布料
               <select className="field mt-1" value={fabric} onChange={e => setFabric(e.target.value as FabricPreset)}>
                 {FABRICS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
               </select>
             </label>
             {fabric !== design.fabricPreset && <p className="text-xs text-muted">更換布料會把所有區域參數重設為「{fabricLabel(fabric)}」預設值。</p>}
-            <button className="btn btn-primary w-full justify-center" disabled={!!busy} onClick={saveAndCompile}>
+            <label className="block text-sm">精細度
+              <select className="field mt-1" value={level} onChange={e => setLevel(e.target.value as DetailLevel)}>
+                {DETAIL_LEVELS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+              </select>
+            </label>
+            <p className="text-xs text-muted">{DETAIL_LEVELS.find(d => d.id === level)?.hint}</p>
+            <button className="btn btn-primary w-full justify-center" disabled={!!busy || !sizeOk} onClick={saveAndCompile}>
               {busy ?? (dirty ? "儲存並編譯" : stale || compiled === null ? "編譯" : "重新編譯")}
             </button>
+            {progress && <JobProgress p={progress} />}
           </div>
 
           <div className="card space-y-2 p-4">
@@ -273,20 +324,30 @@ export default function ProjectPage() {
               && design.planner.colorChangesAfter < design.planner.colorChangesBefore && (
               <p className="text-xs text-muted">已自動調整順序：換色 {design.planner.colorChangesBefore} → {design.planner.colorChangesAfter} 次（不改變圖形重疊關係）。</p>
             )}
-            <ul className="max-h-96 space-y-2 overflow-auto text-sm">
-              {design.regions.map(reg => {
+            <RegionMap design={design} colors={colors} selected={selected}
+              hidden={rid => regionValue(rid, "hidden", !!design.regions.find(x => x.id === rid)?.hidden)}
+              onSelect={rid => {
+                setSelected(cur => cur === rid ? null : rid);
+                document.getElementById(`region-row-${rid}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+              }} />
+            <p className="text-xs text-muted">點圖上的形狀或下方的列表，會標出是哪個區域。</p>
+            <ul className="max-h-96 space-y-1 overflow-auto text-sm">
+              {design.regions.map((reg, index) => {
                 const hidden = regionValue(reg.id, "hidden", !!reg.hidden);
                 const colorId = regionValue(reg.id, "colorId", reg.colorId);
                 const allowedFor = detail.allowedStitches[reg.id];
                 const plan = reg.plan;
                 return (
-                  <li key={reg.id} className={hidden ? "opacity-50" : ""}>
+                  <li key={reg.id} id={`region-row-${reg.id}`}
+                    className={`rounded-md p-1 ${hidden ? "opacity-50" : ""} ${selected === reg.id ? "bg-fabric ring-1 ring-bad" : ""}`}
+                    onClick={e => { if (!(e.target as HTMLElement).closest("input,select")) setSelected(cur => cur === reg.id ? null : reg.id); }}>
                     <div className="flex items-center gap-2">
                       <input type="checkbox" checked={!hidden} aria-label={`繡製 ${reg.name}`}
                         disabled={!hidden && visibleCount <= 1}
                         onChange={e => editRegion(reg.id, { hidden: !e.target.checked })} />
-                      <span className="inline-block h-3.5 w-3.5 rounded-sm border border-line" style={{ background: colors[colorId] }} />
-                      <span className="min-w-0 flex-1 truncate" title={reg.id}>{reg.name}</span>
+                      <RegionThumb design={design} regionId={reg.id} />
+                      <span className="inline-block h-3.5 w-3.5 shrink-0 rounded-sm border border-line" style={{ background: colors[colorId] }} />
+                      <span className="min-w-0 flex-1 truncate" title={reg.id}>{index + 1}. {reg.name}</span>
                       {plan?.needsReview && <span className="rounded bg-warn px-1 text-xs text-accent-ink" title="需要人工確認">需確認</span>}
                       {design.palette.length > 1 && (
                         <select className="field w-auto px-1 py-0.5 text-xs" value={colorId} aria-label={`${reg.name} 線色`}
@@ -305,7 +366,7 @@ export default function ProjectPage() {
                       </select>
                     </div>
                     {plan && (
-                      <p className="ml-6 mt-0.5 text-xs text-muted">
+                      <p className="ml-[4.25rem] mt-0.5 text-xs text-muted">
                         {plan.manual ? "手動設定" : plan.source === "ai" ? `AI：${plan.aiReason || STITCH_LABEL[plan.suggested]}` : planReason(plan.reason)}
                         {plan.override && <span className="text-warn">（規則否決 AI 的{STITCH_LABEL[plan.suggested]}：{errorMessage(plan.override)}）</span>}
                         {reg.runningPath === "centerline" && reg.stitchType === "running" && "・沿中心線"}

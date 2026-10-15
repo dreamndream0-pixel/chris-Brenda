@@ -212,11 +212,12 @@ def expected_extent_mm(design: dict) -> tuple[float, float]:
 
 def _compile(job: dict) -> dict:
     revision = job["revision"]
-    _set(job["id"], status="compiling", progress=20)
+    _set(job["id"], status="preprocessing", progress=5)
     with db.get_engine().connect() as conn:
         project = _project(conn, job["project_id"])
         design = annotate_warnings(_design(conn, project["id"], revision))
     svg = compile_design(design)
+    _set(job["id"], status="compiling", progress=10)
 
     with tempfile.TemporaryDirectory(prefix="emb-compile-") as tmp:
         tmp_dir = Path(tmp)
@@ -224,7 +225,7 @@ def _compile(job: dict) -> dict:
         compiled = compile_svg(tmp_dir / "design.svg", tmp_dir / "out",
                                cache_dir=get_settings().data_dir / "inkstitch-cache" / project["id"])
 
-        _set(job["id"], status="validating", progress=75)
+        _set(job["id"], status="validating", progress=85)
         exp_w, exp_h = expected_extent_mm(design)
         tol = max(1.5, 0.03 * max(exp_w, exp_h))
         expected = {"widthMm": round(exp_w, 2), "heightMm": round(exp_h, 2), "toleranceMm": tol}
@@ -258,6 +259,7 @@ def _compile(job: dict) -> dict:
         if ".txt" in compiled.files:
             files["threadlist"] = ("threadlist.txt", compiled.files[".txt"].read_bytes())
 
+    _set(job["id"], status="exporting", progress=93)
     with db.get_engine().begin() as conn:
         for kind, (filename, data) in files.items():
             _put_artifact(conn, project, revision, job["id"], kind, filename, data)

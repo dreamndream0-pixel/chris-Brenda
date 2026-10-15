@@ -33,3 +33,17 @@ def test_every_element_trims_after():
     paths = root.findall(".//{http://www.w3.org/2000/svg}path")
     assert [p.get("id") for p in paths] == ["r1_1", "r1_2"]
     assert all(p.get(f"{{{INKSTITCH_NS}}}trim_after") == "True" for p in paths)
+
+
+def test_detail_level_tightens_fill():
+    from services.worker.svg_compile import INKSTITCH_NS as NS
+
+    def attrs(level):
+        design = _design(SECOND_SQUARE) | {"detailLevel": level}
+        design["regions"][0]["params"] = {"rowSpacingMm": 0.4, "maxStitchLengthMm": 3.0}
+        path = etree.fromstring(compile_design(design)).find(".//{http://www.w3.org/2000/svg}path")
+        return float(path.get(f"{{{NS}}}row_spacing_mm")), float(path.get(f"{{{NS}}}max_stitch_length_mm"))
+
+    assert attrs("standard") == (0.4, 3.0)
+    assert attrs("fine") == (0.35, 2.5)
+    assert attrs("ultra") == (0.3, 2.0)

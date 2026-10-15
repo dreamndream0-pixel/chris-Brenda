@@ -63,6 +63,29 @@ INT_PARAMS = {"repeats"}
 
 SIZE_LIMITS_MM = (5.0, 300.0)
 
+# Detail level: denser rows and shorter stitches follow small shapes and curves more closely,
+# at the cost of more stitches (time) and more stiffness / puckering on thin or stretchy fabric.
+DETAIL_LEVELS: dict[str, dict] = {
+    "standard": {"spacing": 1.0, "maxStitchMm": None, "runningMm": None},
+    "fine": {"spacing": 0.875, "maxStitchMm": 2.5, "runningMm": 1.6},
+    "ultra": {"spacing": 0.75, "maxStitchMm": 2.0, "runningMm": 1.2},
+}
+
+
+def apply_detail(stitch_type: str, params: dict, level: str | None) -> dict:
+    """Tighten a region's parameters for the design's detail level (still clamped afterwards)."""
+    d = DETAIL_LEVELS.get(level or "standard", DETAIL_LEVELS["standard"])
+    out = dict(params)
+    if stitch_type == "fill":
+        out["rowSpacingMm"] = float(out.get("rowSpacingMm", 0.4)) * d["spacing"]
+        if d["maxStitchMm"]:
+            out["maxStitchLengthMm"] = min(float(out.get("maxStitchLengthMm", 3.0)), d["maxStitchMm"])
+    elif stitch_type == "satin":
+        out["zigzagSpacingMm"] = float(out.get("zigzagSpacingMm", 0.4)) * d["spacing"]
+    elif stitch_type == "running" and d["runningMm"]:
+        out["runningStitchLengthMm"] = min(float(out.get("runningStitchLengthMm", 2.0)), d["runningMm"])
+    return out
+
 
 def default_params(fabric: str, stitch_type: str) -> dict:
     preset = FABRIC_PRESETS.get(fabric) or FABRIC_PRESETS["other"]

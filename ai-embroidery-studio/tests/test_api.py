@@ -430,3 +430,12 @@ def test_supabase_hs256_without_secret_asks_auth_server(make_client, monkeypatch
     assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {good}"}).status_code == 200
     assert len(calls) == 1 and calls[0][0] == "https://proj.supabase.co/auth/v1/user"  # second hit cached
     assert client.get("/api/v1/projects", headers={"Authorization": f"Bearer {bad}"}).status_code == 401
+
+
+def test_detail_level_is_saved_and_jobs_have_times(client):
+    pid, job = upload(client, ALICE, SIMPLE_SVG)
+    assert job["createdAt"] and job["updatedAt"]
+    res = client.patch(f"/api/v1/projects/{pid}/design", json={"baseRevision": 1, "detailLevel": "ultra"}, headers=ALICE)
+    assert res.status_code == 200 and res.json()["design"]["detailLevel"] == "ultra"
+    bad = client.patch(f"/api/v1/projects/{pid}/design", json={"baseRevision": 2, "detailLevel": "max"}, headers=ALICE)
+    assert bad.status_code == 422

@@ -5,6 +5,12 @@ export const FABRICS = [
   { id: "other", label: "其他" },
 ] as const;
 
+export const DETAIL_LEVELS = [
+  { id: "standard", label: "標準", hint: "一般用途，針數最少、最快。" },
+  { id: "fine", label: "精細", hint: "行距較密、針距較短，小字和曲線更清楚。" },
+  { id: "ultra", label: "極精細", hint: "最密最細，針數多約 1/3；薄布或彈性布容易起皺，建議先試繡。" },
+] as const;
+
 export const fabricLabel = (id: string) => FABRICS.find(f => f.id === id)?.label ?? id;
 
 export const PROJECT_STATUS: Record<string, string> = { draft: "草稿", awaiting_test_sew: "待試繡", accepted: "已驗收" };

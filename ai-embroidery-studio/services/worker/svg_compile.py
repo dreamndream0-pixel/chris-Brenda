@@ -12,7 +12,7 @@ from lxml import etree
 from svgelements import Path
 
 from .engine import INKSTITCH_SVG_VERSION
-from .fabrics import clamp_params
+from .fabrics import apply_detail, clamp_params
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
@@ -159,7 +159,7 @@ def compile_design(design: dict) -> bytes:
         stitch_type = region["stitchType"]
         if stitch_type not in ("fill", "running", "satin"):
             raise CompileInputError("unsupported_stitch_type", f"{stitch_type} is not available")
-        params = clamp_params(stitch_type, region.get("params", {}))
+        params = clamp_params(stitch_type, apply_detail(stitch_type, region.get("params", {}), design.get("detailLevel")))
         center = _centerline(region)
         if stitch_type == "satin" or (stitch_type == "running" and region.get("runningPath") == "centerline"):
             if not center:
