@@ -8,10 +8,11 @@ import copy
 import numpy as np
 
 from .fabrics import SATIN_WIDTH_MM, THIN_RUNNING_MM, default_params
-from .geometry import analyze_design, masks_for
+from .geometry import METRICS_VERSION, analyze_design, masks_for
 
 SATIN_MAX_WIDTH_CV = 0.25      # width variation along the stroke
 SATIN_MIN_COVERAGE = 0.75      # centreline x width must explain most of the area
+MIN_SHAPE_FIDELITY = 0.90     # measured overlap of reconstructed stroke and original silhouette
 AUTO_SATIN_MM = (1.5, 6.0)     # rules-only satin is more conservative than the hard limits
 OVERLAP_MM2 = 0.05
 
@@ -31,6 +32,8 @@ def satin_blocker(region: dict, design: dict) -> str | None:
     c = (region.get("metrics") or {}).get("centerline")
     if not c:
         return "satin_needs_uniform_stroke"
+    if c.get("fidelity", 1.0) < MIN_SHAPE_FIDELITY:
+        return "satin_shape_mismatch"
     if c["widthCv"] > SATIN_MAX_WIDTH_CV or c["coverage"] < SATIN_MIN_COVERAGE or c["lengthUnits"] < 2 * c["widthUnits"]:
         return "satin_needs_uniform_stroke"
     w = c["widthUnits"] * unit_to_mm(design)
@@ -61,11 +64,13 @@ def rule_choice(region: dict, design: dict) -> tuple[str, str]:
         if w is not None and satin_blocker(region, design) is None and AUTO_SATIN_MM[0] <= w <= AUTO_SATIN_MM[1]:
             return "satin", "wide_stroke"
         return "running", "stroke_line"
-    if w is not None and w < THIN_RUNNING_MM:
+    fidelity = ((region.get("metrics") or {}).get("centerline") or {}).get("fidelity", 1.0)
+    # At sub-millimetre widths, a single raster pixel is a large area fraction.
+    if w is not None and w < THIN_RUNNING_MM and fidelity >= 0.75:
         return "running", "thin_line_centerline"
     if w is not None and satin_blocker(region, design) is None and AUTO_SATIN_MM[0] <= w <= AUTO_SATIN_MM[1]:
         return "satin", "uniform_stroke"
-    return "fill", "area_fill"
+    return "fill", "preserve_shape" if fidelity < MIN_SHAPE_FIDELITY else "area_fill"
 
 
 def set_stitch(region: dict, design: dict, stitch: str) -> None:
@@ -78,11 +83,11 @@ def set_stitch(region: dict, design: dict, stitch: str) -> None:
 
 
 def ensure_metrics(design: dict) -> dict:
-    missing = [r for r in design["regions"] if "metrics" not in r]
+    missing = [r for r in design["regions"] if (r.get("metrics") or {}).get("version") != METRICS_VERSION]
     if missing:
         metrics = analyze_design(design)
         for r in design["regions"]:
-            r.setdefault("metrics", metrics[r["id"]])
+            r["metrics"] = metrics[r["id"]]
     return design
 
 

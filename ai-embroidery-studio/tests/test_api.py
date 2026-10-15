@@ -248,6 +248,22 @@ def _upload_file(client, headers, data: bytes, filename: str, content_type: str,
 RASTER = Path(__file__).resolve().parents[1] / "fixtures" / "raster"
 
 
+def test_contour_options_survive_analysis_and_reload(client):
+    pid, upload_id, job = _upload_file(client, ALICE, (RASTER / "mascot.jpg").read_bytes(), "m.jpg", "image/jpeg")
+    assert job["status"] == "ready"
+    options = {"colors": 4, "removeBackground": False, "backgroundHex": "#eeeeea",
+               "backgroundScope": "all", "detailMode": "balanced"}
+    again = client.post(f"/api/v1/projects/{pid}/analyze", headers=ALICE,
+                        json={"uploadId": upload_id, **options})
+    assert again.json()["status"] == "ready", again.json()
+    design = client.get(f"/api/v1/projects/{pid}", headers=ALICE).json()["design"]
+    assert design["raster"]["options"] == options
+    assert design["raster"]["analysisVersion"] == 2
+    invalid = client.post(f"/api/v1/projects/{pid}/analyze", headers=ALICE,
+                          json={"uploadId": upload_id, "detailMode": "unknown"})
+    assert invalid.status_code == 422
+
+
 def test_raster_upload_previews_and_reanalyze(client):
     pid, upload_id, job = _upload_file(client, ALICE, (RASTER / "mascot.jpg").read_bytes(), "mascot.jpg", "image/jpeg")
     assert job["status"] == "ready", job

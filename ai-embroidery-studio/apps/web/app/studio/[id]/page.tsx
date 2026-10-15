@@ -64,7 +64,11 @@ export default function ProjectPage() {
         setLock(d.design.lockAspect); setFabric(d.design.fabricPreset);
         const r = d.design.raster;
         if (r) {
-          setRaster({ colors: r.autoColors ? null : r.colors.length, bgMode: "auto", bgHex: r.backgroundHex ?? "#ffffff" });
+          const opts = r.options;
+          setRaster({ colors: opts ? opts.colors ?? null : r.autoColors ? null : r.colors.length,
+            bgMode: opts?.removeBackground === false ? "keep" : opts?.backgroundHex ? "manual" : "auto",
+            bgHex: opts?.backgroundHex ?? r.backgroundHex ?? "#ffffff",
+            backgroundScope: opts?.backgroundScope ?? "edge", detailMode: opts?.detailMode ?? "preserve" });
           setPreviews(await api.previews(id, d.project.currentRevision));
         } else setPreviews({});
       }
@@ -222,7 +226,7 @@ export default function ProjectPage() {
               </select>
             </label>
             {fabric !== design.fabricPreset && <p className="text-xs text-muted">更換布料會把所有區域參數重設為「{fabricLabel(fabric)}」預設值。</p>}
-            <label className="block text-sm">精細度
+            <label className="block text-sm">針跡精細度
               <select className="field mt-1" value={level} onChange={e => setLevel(e.target.value as DetailLevel)}>
                 {DETAIL_LEVELS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
               </select>
@@ -288,6 +292,9 @@ export default function ProjectPage() {
           {design.raster && (
             <div className="card space-y-3 p-4">
               <h2 className="font-medium">圖片轉向量</h2>
+              {(design.raster.analysisVersion ?? 1) < 2 && <p className="text-xs text-warn">
+                此設計使用舊版圖片分析。選擇「保留細節」並重新分析，才能套用新的輪廓處理。
+              </p>}
               <div className="grid grid-cols-2 gap-2 text-xs text-muted">
                 {([["source_preview", "原圖"], ["quantized_preview", `分色結果（${design.raster.colors.length} 色）`]] as const).map(([k, label]) => (
                   <figure key={k} className="space-y-1">

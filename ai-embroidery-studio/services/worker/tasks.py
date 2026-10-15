@@ -126,7 +126,9 @@ def _analyze(job: dict) -> dict:
     _set(job["id"], status="planning", progress=20)
     if data.startswith(PNG_MAGIC) or data.startswith(JPEG_MAGIC):
         opts = RasterOptions(colors=params.get("colors"), remove_background=params.get("removeBackground", True),
-                             background_hex=params.get("backgroundHex"))
+                             background_hex=params.get("backgroundHex"),
+                             background_scope=params.get("backgroundScope", "edge"),
+                             detail_mode=params.get("detailMode", "preserve"))
         design, thumb, quantized = import_raster(data, width, project["fabric_preset"], opts, params.get("heightMm"))
         previews = {"source_preview": thumb, "quantized_preview": quantized}
     else:

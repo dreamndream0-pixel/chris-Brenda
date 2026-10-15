@@ -51,6 +51,12 @@ def test_unconfigured_engine(monkeypatch, tmp_path):
     assert e.value.code == "engine_not_configured"
 
 
+def test_quoted_engine_arguments_keep_spaces_and_path_separators(monkeypatch, tmp_path):
+    script = tmp_path / "engine with spaces.py"
+    monkeypatch.setenv(engine.INKSTITCH_CMD_ENV, f'"{sys.executable}" "{script}" --mode=test')
+    assert engine.inkstitch_command() == [sys.executable, str(script), "--mode=test"]
+
+
 def test_compile_happy_path(monkeypatch, tmp_path):
     dst = make_pattern(tmp_path / "p", [("#654a3b", 0, 10)], ".dst")
     pes = make_pattern(tmp_path / "p", [("#654a3b", 0, 10)], ".pes")
@@ -100,14 +106,15 @@ def test_svg_without_version_is_rejected(monkeypatch, tmp_path):
 
 
 def test_timeout_kills_child_processes(monkeypatch, tmp_path):
-    # A wrapper shell whose child keeps running: both must be gone after the timeout.
+    # A portable wrapper whose child keeps running: both must die on timeout.
     marker = tmp_path / "alive"
-    script = tmp_path / "wrap.sh"
-    script.write_text(f"#!/bin/sh\n(sleep 3; touch {marker}) &\nwait\n")
-    script.chmod(0o755)
-    monkeypatch.setenv(engine.INKSTITCH_CMD_ENV, str(script))
-    with pytest.raises(engine.EngineError):
+    script = tmp_path / "wrap.py"
+    child = f"import time; from pathlib import Path; time.sleep(3); Path({str(marker)!r}).touch()"
+    script.write_text(f"import subprocess, sys\nsubprocess.run([sys.executable, '-c', {child!r}])\n")
+    monkeypatch.setenv(engine.INKSTITCH_CMD_ENV, f'"{sys.executable}" "{script}"')
+    with pytest.raises(engine.EngineError) as exc:
         engine.compile_svg(FIXTURE, tmp_path / "out", timeout_s=1)
+    assert exc.value.code == "engine_timeout"
     import time
     time.sleep(3)
     assert not marker.exists()

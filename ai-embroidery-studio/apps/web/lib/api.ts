@@ -12,6 +12,7 @@ export interface Project {
 }
 export type StitchType = "fill" | "running" | "satin";
 export type DetailLevel = "standard" | "fine" | "ultra";
+export type ContourDetail = "preserve" | "balanced" | "clean";
 export interface RegionPlan {
   source: "rules" | "ai"; suggested: StitchType; applied: StitchType; reason: string; needsReview: boolean;
   confidence: number | null; aiReason: string | null; override: string | null; manual?: boolean;
@@ -27,12 +28,15 @@ export interface Design {
   lockAspect: boolean; fabricPreset: FabricPreset; detailLevel?: DetailLevel; geometry: { viewBox: [number, number, number, number] };
   palette: { id: string; hex: string; threadCode: string | null }[]; regions: Region[]; warnings: string[];
   source?: { filename: string; uploadId: string };
-  raster?: { pixels: [number, number]; colors: string[]; backgroundHex: string | null; autoColors: boolean };
+  raster?: { pixels: [number, number]; colors: string[]; backgroundHex: string | null; autoColors: boolean;
+    analysisVersion?: number; detailMode?: ContourDetail; minFeatureMm?: number; removedFraction?: number;
+    options?: AnalyzeOptions };
   planner?: { ai: boolean; model?: string; colorChangesBefore?: number; colorChangesAfter?: number };
   aiReview?: { summary: string; risks: { code: string; regionIds: string[]; message: string }[]; model: string; basedOnRevision: number };
 }
 export interface AppConfig { aiEnabled: boolean; aiModel: string | null; authMode: "dev" | "supabase" }
-export interface AnalyzeOptions { colors?: number | null; removeBackground?: boolean; backgroundHex?: string | null; widthMm?: number }
+export interface AnalyzeOptions { colors?: number | null; removeBackground?: boolean; backgroundHex?: string | null;
+  backgroundScope?: "edge" | "all"; detailMode?: ContourDetail; widthMm?: number }
 export interface RegionPatch { id: string; stitchType?: StitchType; colorId?: string; hidden?: boolean }
 export interface Job {
   jobId: string; projectId: string; kind: "analyze" | "compile" | "export" | "ai_plan"; revision: number | null;

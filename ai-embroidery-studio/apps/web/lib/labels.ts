@@ -7,8 +7,8 @@ export const FABRICS = [
 
 export const DETAIL_LEVELS = [
   { id: "standard", label: "標準", hint: "一般用途，針數最少、最快。" },
-  { id: "fine", label: "精細", hint: "行距較密、針距較短，小字和曲線更清楚。" },
-  { id: "ultra", label: "極精細", hint: "最密最細，針數多約 1/3；薄布或彈性布容易起皺，建議先試繡。" },
+  { id: "fine", label: "精細", hint: "行距較密、針距較短；已消失的圖形請用「保留細節」重新分析。" },
+  { id: "ultra", label: "極精細", hint: "增加針跡密度，不會恢復原圖細節；薄布或彈性布容易起皺，建議先試繡。" },
 ] as const;
 
 export const fabricLabel = (id: string) => FABRICS.find(f => f.id === id)?.label ?? id;
@@ -39,6 +39,8 @@ const MESSAGES: Record<string, string> = {
   no_foreground: "去背後沒有剩下圖形；請改用「保留背景」或指定背景色。",
   invalid_background_color: "背景色格式不正確。",
   invalid_color_count: "色數需在 1–6 之間。",
+  invalid_detail_mode: "請選擇有效的輪廓細節模式。",
+  invalid_background_scope: "請選擇有效的去背範圍。",
   unknown_region: "找不到這個區域，請重新整理。",
   unknown_color: "找不到這個顏色，請重新整理。",
   all_regions_hidden: "至少要保留一個可見區域。",
@@ -53,6 +55,7 @@ const MESSAGES: Record<string, string> = {
   ai_request_failed: "AI 請求失敗。",
   too_many_regions: "區域太多（超過 400 個），AI 無法分析。",
   satin_needs_uniform_stroke: "緞面只適用於寬度均勻的線條狀區域。",
+  satin_shape_mismatch: "轉成緞面會改變這個區域的輪廓，請保留填針。",
   satin_too_narrow: "以目前尺寸，這條線窄於 1 mm，無法做緞面。",
   satin_too_wide: "以目前尺寸，這條線寬於 7 mm，緞面會太鬆。",
   fill_needs_area: "這是線條（SVG 描邊），不能做填針。",
@@ -92,11 +95,13 @@ const WARNINGS: Record<string, string> = {
   many_colors: "超過 6 色，建議減少",
   many_jumps: "跳針偏多",
   color_blocks_differ_from_design: "換色段數與設計不同",
-  small_details_removed: "部分細小雜點已清除（小於 0.8 mm）",
+  small_details_removed: "已依目前細節模式清除小區域；若重要細節消失，請選「保留細節」或放大尺寸後重新分析",
+  color_detail_limited: "目前色數仍無法保留部分色差，請增加色數或簡化原圖",
   thin_features_under_1mm: "有寬度小於 1 mm 的細線，刺繡可能不清楚",
   satin_too_narrow: "緞面線條窄於 1 mm",
   satin_too_wide: "緞面線條寬於 7 mm，針腳會太長",
   satin_needs_uniform_stroke: "緞面區域寬度不均",
+  satin_shape_mismatch: "緞面中心線與原輪廓差異較大，建議改用填針",
   thin_fill_use_running: "細線用填針效果差，建議改平針",
 };
 export const warningLabel = (w: string) =>
@@ -108,6 +113,7 @@ const PLAN_REASONS: Record<string, string> = {
   thin_line_centerline: "細線 → 中心線平針",
   uniform_stroke: "寬度均勻的線條 → 緞面",
   area_fill: "面積 → 填針",
+  preserve_shape: "保留原始輪廓 → 填針",
   wide_stroke: "粗描邊 → 緞面",
   stroke_line: "描邊 → 平針",
 };
