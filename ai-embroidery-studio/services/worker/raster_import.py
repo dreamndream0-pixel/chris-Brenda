@@ -26,7 +26,7 @@ MAX_COLORS = 6
 BG_DELTA_E = 12.0             # min Lab distance from background colour to count as foreground
 AUTO_K_P95_DELTA_E = 10.0     # auto colour count: smallest k whose 95th-percentile ΔE is below this
                               # (a mean would let small details such as cheeks vanish)
-MIN_FEATURE_MM = 0.8          # components smaller than this square are removed as speckle
+DETAIL_MODES = {"preserve": 0.35, "balanced": 0.8, "clean": 1.2}
 THIN_FEATURE_MM = 1.0
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -38,6 +38,8 @@ class RasterOptions:
     colors: int | None = None          # None = auto (1..6)
     remove_background: bool = True
     background_hex: str | None = None  # None = auto-detect from the image border
+    background_scope: str = "edge"     # edge-connected background, or all matching pixels
+    detail_mode: str = "preserve"      # physical cleanup threshold, separate from stitch density
 
 
 def sniff_format(data: bytes) -> str:
@@ -79,7 +81,13 @@ def _resize(rgba: np.ndarray) -> np.ndarray:
     scale = WORK_SIDE / max(h, w)
     if scale >= 1:
         return rgba
-    return cv2.resize(rgba, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    # Premultiply before resampling: RGB hidden in transparent pixels must not bleed
+    # into the artwork and become a new thread colour at its edge.
+    premult = rgba.astype(np.float32)
+    premult[..., :3] *= premult[..., 3:4] / 255
+    small = cv2.resize(premult, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    small[..., :3] *= 255 / np.maximum(small[..., 3:4], 1)
+    return np.clip(np.round(small), 0, 255).astype(np.uint8)
 
 
 def _to_lab(rgb: np.ndarray) -> np.ndarray:
@@ -102,7 +110,7 @@ def _parse_hex(value: str) -> np.ndarray:
 
 def foreground_mask(rgba: np.ndarray, opts: RasterOptions) -> tuple[np.ndarray, str | None]:
     alpha = rgba[..., 3]
-    if (alpha < 250).mean() > 0.01:  # real transparency: trust the alpha channel
+    if (alpha < 128).any():  # even a narrow transparent border is intentional
         return alpha >= 128, None
     if not opts.remove_background:
         return np.ones(alpha.shape, bool), None
@@ -113,63 +121,100 @@ def foreground_mask(rgba: np.ndarray, opts: RasterOptions) -> tuple[np.ndarray, 
         border = np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]])
         bg = np.median(border, axis=0).astype(np.uint8)
     dist = np.linalg.norm(_to_lab(rgb) - _to_lab(bg.reshape(1, 3)), axis=1).reshape(alpha.shape)
-    return dist > BG_DELTA_E, "#%02x%02x%02x" % tuple(int(c) for c in bg)
+    background = dist <= BG_DELTA_E
+    if opts.background_scope == "edge":
+        # Matching white inside a face or logo is artwork, unless the user explicitly
+        # asks to remove all matching colours (e.g. enclosed letter counters).
+        _, components = cv2.connectedComponents(background.astype(np.uint8), connectivity=4)
+        border_ids = np.unique(np.concatenate([components[0], components[-1], components[:, 0], components[:, -1]]))
+        background = np.isin(components, border_ids[border_ids != 0])
+    return ~background, "#%02x%02x%02x" % tuple(int(c) for c in bg)
 
 
-def quantize(lab_pixels: np.ndarray, k: int | None) -> tuple[np.ndarray, np.ndarray]:
-    """k-means in Lab. Returns (labels, centers). Auto k = smallest k whose p95 ΔE < threshold."""
+def _nearest_colors(pixels: np.ndarray, centers: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Linear memory instead of an image x palette x 3 temporary array."""
+    labels = np.zeros(len(pixels), np.int16)
+    error2 = np.full(len(pixels), np.inf, np.float32)
+    for i, center in enumerate(centers):
+        d2 = np.sum((pixels - center) ** 2, axis=1)
+        better = d2 < error2
+        labels[better], error2[better] = i, d2[better]
+    return labels, np.sqrt(error2)
+
+
+def _missing_detail(errors: np.ndarray, fg: np.ndarray, min_area: int) -> bool:
+    residual = np.zeros(fg.shape, np.uint8)
+    residual[fg] = (errors > 20).astype(np.uint8)
+    # Ignore one-pixel JPEG/anti-alias fringes, but retain compact contrasting details.
+    residual = cv2.morphologyEx(residual, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    _, _, stats, _ = cv2.connectedComponentsWithStats(residual, connectivity=8)
+    return bool(np.any(stats[1:, cv2.CC_STAT_AREA] >= max(9, min_area)))
+
+
+def quantize(lab_pixels: np.ndarray, k: int | None, fg: np.ndarray | None = None,
+             min_area: int = 4) -> tuple[np.ndarray, np.ndarray]:
+    """Auto colour count checks both global error and spatially coherent small details."""
     sample = lab_pixels
     if len(sample) > 60000:
         sample = sample[np.random.default_rng(0).choice(len(sample), 60000, replace=False)]
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.2)
     candidates = [k] if k else range(1, MAX_COLORS + 1)
     best = None
+    unique_count = len(np.unique(sample.round(0), axis=0))
     for kk in candidates:
-        kk = min(kk, len(np.unique(sample.round(0), axis=0)))
+        kk = min(kk, unique_count)
         cv2.setRNGSeed(1)
         _, _, centers = cv2.kmeans(sample, kk, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
-        err = np.percentile(np.linalg.norm(sample[:, None, :] - centers[None], axis=2).min(axis=1), 95)
+        _, sample_error = _nearest_colors(sample, centers)
+        err = np.percentile(sample_error, 95)
         best = centers
         if not k and err < AUTO_K_P95_DELTA_E:
+            _, errors = _nearest_colors(lab_pixels, centers)
+            if fg is None or not _missing_detail(errors, fg, min_area):
+                break
+        if kk == unique_count:
             break
-    labels = np.linalg.norm(lab_pixels[:, None, :] - best[None], axis=2).argmin(axis=1)
+    labels, _ = _nearest_colors(lab_pixels, best)
     return labels, best
 
 
 def _clean_labels(label_map: np.ndarray, fg: np.ndarray, n: int, min_area: int) -> tuple[np.ndarray, float]:
-    """Mode filter + drop specks; returns (label map with -1 = background, removed-area fraction)."""
+    """Remove only undersized components; never median-filter categorical colour IDs."""
     lm = np.where(fg, label_map, n).astype(np.uint8)  # background as its own label n
-    lm = cv2.medianBlur(lm, 3)
     removed = 0
+    holes = np.zeros(fg.shape, bool)
     for i in range(n):
         mask = (lm == i).astype(np.uint8)
         count, comp, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         for c in range(1, count):
             if stats[c, cv2.CC_STAT_AREA] < min_area:
-                lm[comp == c] = 255  # mark for refill
+                holes[comp == c] = True
                 removed += stats[c, cv2.CC_STAT_AREA]
     # Re-assign removed specks to the surrounding label (nearest non-removed neighbour).
-    holes = lm == 255
     if holes.any():
         valid = (~holes).astype(np.uint8)
+        if not valid.any():
+            return np.full(fg.shape, -1, np.int16), 1.0
         _, idx = cv2.distanceTransformWithLabels(1 - valid, cv2.DIST_L2, 3, labelType=cv2.DIST_LABEL_PIXEL)
         ys, xs = np.nonzero(valid)
         lookup = lm[ys, xs]
         lm = np.where(holes, lookup[idx - 1], lm)
     out = lm.astype(np.int16)
-    out[out == n] = -1
+    out[(out == n) | ~fg] = -1
     return out, removed / max(1, int(fg.sum()))
 
 
-def _trace(mask: np.ndarray, min_area: int) -> list[str]:
+def _trace(mask: np.ndarray, min_area: int, detail_mode: str = "preserve") -> list[str]:
     img = np.where(mask, 0, 255).astype(np.uint8)
     img = np.pad(img, 2, constant_values=255)  # keep shapes touching the edge closed
     ok, png = cv2.imencode(".png", img)
     svg_text = vtracer.convert_raw_image_to_svg(
         png.tobytes(), img_format="png", colormode="binary", mode="spline",
-        # VTracer squares filter_speckle into an area threshold, so pass a side length.
-        filter_speckle=max(2, int(min_area ** 0.5)),
-        corner_threshold=60, length_threshold=4.0, splice_threshold=45, path_precision=2)
+        # Cleanup already applied the physical threshold. A second pixel filter here
+        # used to silently delete accents and dots which had survived that cleanup.
+        filter_speckle=0, corner_threshold=60,
+        length_threshold=1.0 if detail_mode == "preserve" else 4.0,
+        splice_threshold=45, path_precision=3)
     svg = SVG.parse(io.StringIO(svg_text), reify=True)
     paths = []
     for el in svg.elements():
@@ -195,6 +240,10 @@ def raster_to_svg(data: bytes, width_mm: float, opts: RasterOptions) -> tuple[by
     """Return (traced SVG, info, original RGBA thumbnail, quantised RGBA preview)."""
     rgba = _resize(load_image(data))
     h, w = rgba.shape[:2]
+    if opts.detail_mode not in DETAIL_MODES:
+        raise ImportError_("invalid_detail_mode", "unknown contour detail mode")
+    if opts.background_scope not in ("edge", "all"):
+        raise ImportError_("invalid_background_scope", "background scope must be edge or all")
     fg, bg_hex = foreground_mask(rgba, opts)
     if fg.mean() < 0.002:
         raise ImportError_("no_foreground", "no foreground found; check the background colour")
@@ -203,14 +252,15 @@ def raster_to_svg(data: bytes, width_mm: float, opts: RasterOptions) -> tuple[by
 
     lab = _to_lab(rgba[..., :3].reshape(-1, 3))
     fg_flat = fg.reshape(-1)
-    labels_fg, centers = quantize(lab[fg_flat], opts.colors)
+    cols = np.nonzero(fg.any(axis=0))[0]
+    px_per_mm = (cols[-1] - cols[0] + 1) / max(width_mm, 1)
+    min_feature = DETAIL_MODES[opts.detail_mode]
+    min_area = max(2, int(np.ceil((min_feature * px_per_mm) ** 2)))
+    labels_fg, centers = quantize(lab[fg_flat], opts.colors, fg, min_area)
     label_map = np.full(fg_flat.shape, 0, np.int16)
     label_map[fg_flat] = labels_fg
     label_map = label_map.reshape(h, w)
 
-    cols = np.nonzero(fg.any(axis=0))[0]
-    px_per_mm = (cols[-1] - cols[0] + 1) / max(width_mm, 1)  # width_mm is the stitched (foreground) width
-    min_area = max(4, int((MIN_FEATURE_MM * px_per_mm) ** 2))
     clean, removed_frac = _clean_labels(label_map, fg, len(centers), min_area)
 
     order = sorted(range(len(centers)), key=lambda i: -(clean == i).sum())  # large areas first, details last
@@ -220,7 +270,7 @@ def raster_to_svg(data: bytes, width_mm: float, opts: RasterOptions) -> tuple[by
         if mask.sum() < min_area:
             continue
         hex_color = _lab_to_hex(centers[i])
-        for d in _trace(mask, min_area=min_area):
+        for d in _trace(mask, min_area=min_area, detail_mode=opts.detail_mode):
             parts.append(f'<path d="{d}" fill="{hex_color}" fill-rule="evenodd"/>')
         colors.append(hex_color)
         thin = thin or _thickness_mm(mask, px_per_mm) < THIN_FEATURE_MM
@@ -235,12 +285,19 @@ def raster_to_svg(data: bytes, width_mm: float, opts: RasterOptions) -> tuple[by
         rgb = _parse_hex(_lab_to_hex(c))
         preview[clean == i] = (*rgb, 255)
     warnings = []
-    if removed_frac > 0.02:
+    if removed_frac > 0:
         warnings.append("small_details_removed")
     if thin:
         warnings.append("thin_features_under_1mm")
+    _, errors = _nearest_colors(lab[fg_flat], centers)
+    if _missing_detail(errors, fg, min_area):
+        warnings.append("color_detail_limited")
     info = {"kind": "raster", "pixels": [w, h], "colors": colors, "backgroundHex": bg_hex,
-            "autoColors": opts.colors is None, "removedFraction": round(removed_frac, 4)}
+            "autoColors": opts.colors is None, "removedFraction": round(removed_frac, 4),
+            "analysisVersion": 2, "detailMode": opts.detail_mode, "minFeatureMm": min_feature,
+            "options": {"colors": opts.colors, "removeBackground": opts.remove_background,
+                        "backgroundHex": opts.background_hex, "backgroundScope": opts.background_scope,
+                        "detailMode": opts.detail_mode}}
     return svg, {**info, "warnings": warnings}, rgba, preview
 
 

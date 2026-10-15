@@ -43,6 +43,34 @@ def test_rule_choices():
     assert "zigzagSpacingMm" in planned["ribbon"]["params"]
 
 
+def test_satin_centerline_reaches_flat_ends():
+    from svgelements import Path
+    design = _design({"strip": "M10 10 L90 10 L90 13 L10 13 Z"})
+    planned = plan_design(design, reorder=False)
+    region = planned["regions"][0]
+    assert region["stitchType"] == "satin"
+    x0, _, x1, _ = Path(region["metrics"]["centerline"]["d"]).bbox()
+    assert abs(x0 - 10) < 0.15 and abs(x1 - 90) < 0.15
+
+
+def test_shape_mismatch_blocks_satin_even_with_uniform_width():
+    planned = plan_design(_design({"ribbon": SHAPES["ribbon"]}), reorder=False)
+    region = planned["regions"][0]
+    region["metrics"]["centerline"]["fidelity"] = 0.7
+    assert satin_blocker(region, planned) == "satin_shape_mismatch"
+    result = plan_design(planned, reorder=False)["regions"][0]
+    assert result["stitchType"] == "fill"
+    assert result["plan"]["reason"] == "preserve_shape"
+
+
+def test_old_metrics_are_recomputed():
+    design = _design({"strip": "M10 10 L90 10 L90 13 L10 13 Z"})
+    design["regions"][0]["metrics"] = {"centerline": None}
+    planned = plan_design(design, reorder=False)
+    assert planned["regions"][0]["metrics"]["version"] == 2
+    assert planned["regions"][0]["stitchType"] == "satin"
+
+
 def test_satin_limits_follow_size():
     d = plan_design(_design({"ribbon": SHAPES["ribbon"]}), reorder=False)
     region = d["regions"][0]

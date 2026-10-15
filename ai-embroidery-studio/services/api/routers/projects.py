@@ -58,6 +58,8 @@ class AnalyzeRequest(BaseModel):
     colors: int | None = Field(default=None, ge=1, le=6)       # raster only; None = auto
     removeBackground: bool = True                              # raster only
     backgroundHex: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    backgroundScope: Literal["edge", "all"] = "edge"
+    detailMode: Literal["preserve", "balanced", "clean"] = "preserve"
     widthMm: float | None = Field(default=None, ge=MIN_MM, le=MAX_MM)
 
 
@@ -298,7 +300,8 @@ def analyze(project_id: Id, body: AnalyzeRequest, user_id: str = Depends(current
     params = {"uploadId": body.uploadId, "widthMm": body.widthMm or p["width_mm"],
               # A first analysis honours an unlocked height from project creation; re-runs keep the aspect.
               "heightMm": None if rerun else p["height_mm"], "colors": body.colors,
-              "removeBackground": body.removeBackground, "backgroundHex": body.backgroundHex}
+              "removeBackground": body.removeBackground, "backgroundHex": body.backgroundHex,
+              "backgroundScope": body.backgroundScope, "detailMode": body.detailMode}
     return _create_job(user_id, project_id, "analyze", None, params)
 
 

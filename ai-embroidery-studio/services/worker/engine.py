@@ -54,7 +54,12 @@ def inkstitch_command() -> list[str]:
     raw = os.environ.get(INKSTITCH_CMD_ENV, "").strip()
     if not raw:
         raise EngineError("engine_not_configured", f"{INKSTITCH_CMD_ENV} is not set")
-    argv = shlex.split(raw)
+    lexer = shlex.shlex(raw, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    if os.name == "nt":
+        lexer.escape = ""  # Windows path separators are not POSIX escape characters
+    argv = list(lexer)
     exe = shutil.which(argv[0]) or argv[0]
     if not os.path.isabs(exe) or not os.access(exe, os.X_OK):
         raise EngineError("engine_not_configured", f"Ink/Stitch executable not found: {argv[0]}")
@@ -80,13 +85,22 @@ def check_svg_version(svg_bytes: bytes) -> None:
 
 def _run(argv: list[str], cwd: Path, env: dict[str, str], timeout_s: int) -> subprocess.CompletedProcess:
     """Run in its own process group so a timeout also kills wrappers' children (xvfb-run, Xvfb)."""
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+             if os.name == "nt" else {"start_new_session": True})
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            shell=False, start_new_session=True)
+                            shell=False, **group)
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
+        if os.name == "nt":
+            subprocess.run(["taskkill.exe", "/PID", str(proc.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=subprocess.CREATE_NO_WINDOW, check=False)
+            if proc.poll() is None:
+                proc.kill()
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
         raise
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
@@ -114,6 +128,12 @@ def _child_env(job_dir: Path, cache_dir: Path | None = None) -> dict[str, str]:
     }
     if os.environ.get("DISPLAY"):
         env["DISPLAY"] = os.environ["DISPLAY"]
+    if os.name == "nt":
+        for key in ("SystemRoot", "WINDIR"):
+            if os.environ.get(key):
+                env[key] = os.environ[key]
+        env.update(TEMP=str(job_dir), TMP=str(job_dir), USERPROFILE=str(job_dir))
+        env["PATH"] = os.defpath
     return env
 
 

@@ -15,6 +15,7 @@ PX_PER_MM = 10.0          # 0.1 mm raster
 MAX_RASTER_SIDE = 3000
 MIN_CENTERLINE_PX = 6
 MAX_CENTERLINE_WIDTH_MM = 8.0  # wider shapes are never sewn as satin/running, so skip thinning
+METRICS_VERSION = 2
 
 
 def _scale(design: dict) -> tuple[float, float]:
@@ -149,7 +150,8 @@ def analyze_region(mask: np.ndarray, ppu: float, ppm: float = PX_PER_MM) -> dict
     """Metrics in viewBox units: area, max thickness, holes, and centreline if the shape is a simple stroke."""
     area_px = int(mask.sum())
     if area_px == 0:
-        return {"areaUnits2": 0.0, "thicknessUnits": 0.0, "holes": 0, "components": 0, "centerline": None}
+        return {"version": METRICS_VERSION, "areaUnits2": 0.0, "thicknessUnits": 0.0,
+                "holes": 0, "components": 0, "centerline": None}
     ys, xs = np.nonzero(mask)
     y0, x0 = max(0, ys.min() - 2), max(0, xs.min() - 2)
     mask = mask[y0:ys.max() + 3, x0:xs.max() + 3]  # thinning cost scales with the canvas, so crop
@@ -159,6 +161,7 @@ def analyze_region(mask: np.ndarray, ppu: float, ppm: float = PX_PER_MM) -> dict
     outer = sum(1 for h in hierarchy[0] if h[3] < 0) if hierarchy is not None else 0
     holes = sum(1 for h in hierarchy[0] if h[3] >= 0) if hierarchy is not None else 0
     result = {
+        "version": METRICS_VERSION,
         "areaUnits2": round(area_px / ppu ** 2, 4),
         "thicknessUnits": round(2 * float(dist.max()) / ppu, 4),
         "holes": holes,
@@ -177,20 +180,44 @@ def analyze_region(mask: np.ndarray, ppu: float, ppm: float = PX_PER_MM) -> dict
     order = _walk(skel, closed, tolerance_px=median_w * 0.75)
     if order is None:
         return result
-    if not closed:
-        # Thinning runs into the corners of square ends; trim half a width so a satin
-        # column of that width ends flush with the shape.
-        trim = int(round(median_w / 2))
-        order = order[trim: len(order) - trim] if len(order) > 2 * trim + MIN_CENTERLINE_PX else order
     w_along = 2 * dist[tuple(np.array(order).T)]
     mean_w, std_w = float(w_along.mean()), float(w_along.std())
     pts = np.array([(x, y) for y, x in order], np.float32).reshape(-1, 1, 2)
-    approx = cv2.approxPolyDP(pts, max(0.5, 0.05 * ppu), closed).reshape(-1, 2)
+    # A physical tolerance removes raster stair-steps without changing with SVG units.
+    approx = cv2.approxPolyDP(pts, max(0.75, 0.12 * ppm), closed).reshape(-1, 2)
     if len(approx) < 2:
         return result
+    if not closed:
+        # A skeleton already stops inside a flat end. Trimming it by half a width
+        # shortened it a second time. Extend its tangent to the actual boundary instead.
+        for end, neighbour in ((0, 1), (-1, -2)):
+            start = approx[end].copy()
+            direction = start - approx[neighbour]
+            norm = np.linalg.norm(direction)
+            if norm == 0:
+                continue
+            direction /= norm
+            for distance in np.arange(0.25, median_w + 0.25, 0.25):
+                candidate = start + distance * direction
+                x, y = np.round(candidate).astype(int)
+                if not (0 <= y < mask.shape[0] and 0 <= x < mask.shape[1] and mask[y, x]):
+                    break
+                approx[end] = candidate
+    reconstructed = np.zeros(mask.shape, np.uint8)
+    cv2.polylines(reconstructed, [np.round(approx).astype(np.int32)], closed, 1, max(1, round(mean_w)))
+    # Match the butt caps emitted by svg_compile, not OpenCV's round end caps.
+    if not closed:
+        yy, xx = np.indices(mask.shape)
+        for end, neighbour in ((0, 1), (-1, -2)):
+            outward = approx[end] - approx[neighbour]
+            beyond = (xx - approx[end, 0]) * outward[0] + (yy - approx[end, 1]) * outward[1] > 0
+            reconstructed[beyond] = 0
+    fidelity = np.logical_and(mask, reconstructed).sum() / max(1, np.logical_or(mask, reconstructed).sum())
     coords = [((float(x) + x0 - 2) / ppu, (float(y) + y0 - 2) / ppu) for x, y in approx]
     d = "M " + " L ".join(f"{x:.3f},{y:.3f}" for x, y in coords) + (" Z" if closed else "")
     length_px = float(np.sum(np.linalg.norm(np.diff(approx, axis=0), axis=1)))
+    if closed:
+        length_px += float(np.linalg.norm(approx[0] - approx[-1]))
     # A stroke is "uniform" when its width varies little and it is clearly longer than wide.
     result["centerline"] = {
         "d": d,
@@ -199,6 +226,7 @@ def analyze_region(mask: np.ndarray, ppu: float, ppm: float = PX_PER_MM) -> dict
         "widthCv": round(std_w / mean_w, 3) if mean_w else 1.0,
         "lengthUnits": round(length_px / ppu, 4),
         "coverage": round(min(1.0, (length_px * mean_w) / area_px), 3),
+        "fidelity": round(float(fidelity), 3),
     }
     return result
 
@@ -222,10 +250,10 @@ def line_metrics(region: dict) -> dict:
     path = Path(region["svgPath"])
     w = float(region.get("strokeWidthUnits") or 0.0)
     length = float(path.length(error=1e-2))
-    return {"areaUnits2": round(length * w, 4), "thicknessUnits": round(w, 4), "holes": 0, "components": 1,
+    return {"version": METRICS_VERSION, "areaUnits2": round(length * w, 4), "thicknessUnits": round(w, 4), "holes": 0, "components": 1,
             "centerline": {"d": region["svgPath"], "closed": region["svgPath"].rstrip().upper().endswith("Z"),
                            "widthUnits": round(w, 4), "widthCv": 0.0, "lengthUnits": round(length, 4),
-                           "coverage": 1.0}}
+                           "coverage": 1.0, "fidelity": 1.0}}
 
 
 def _mask(region: dict, ppu: float, w: int, h: int) -> np.ndarray:
