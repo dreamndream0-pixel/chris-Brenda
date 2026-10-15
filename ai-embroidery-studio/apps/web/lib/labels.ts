@@ -20,6 +20,16 @@ export const JOB_STATUS: Record<string, string> = {
   validating: "驗證針跡", exporting: "打包中", ready: "完成", failed: "失敗",
 };
 
+// Step label for a job; the same server status means different work per job kind.
+export function jobLabel(j: { kind: string; status: string; progress: number }): string {
+  if (j.kind === "analyze") {
+    if (j.status === "planning") return j.progress < 75 ? "讀取圖形、分色轉向量" : "判斷針法與縫製順序";
+    if (j.status === "exporting") return "儲存結果";
+  }
+  if (j.kind === "compile" && j.status === "exporting") return "儲存檔案";
+  return JOB_STATUS[j.status] ?? j.status;
+}
+
 const MESSAGES: Record<string, string> = {
   not_authenticated: "請先輸入使用者名稱登入。",
   unsupported_file_type: "只支援 SVG、PNG、JPG 檔。",

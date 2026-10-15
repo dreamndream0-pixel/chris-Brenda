@@ -123,7 +123,7 @@ def _analyze(job: dict) -> dict:
 
     width = params.get("widthMm") or project["width_mm"] or 50
     previews: dict[str, bytes] = {}
-    _set(job["id"], status="planning", progress=40)
+    _set(job["id"], status="planning", progress=20)
     if data.startswith(PNG_MAGIC) or data.startswith(JPEG_MAGIC):
         opts = RasterOptions(colors=params.get("colors"), remove_background=params.get("removeBackground", True),
                              background_hex=params.get("backgroundHex"))
@@ -133,10 +133,12 @@ def _analyze(job: dict) -> dict:
         design = import_svg(data, width_mm=width, fabric=project["fabric_preset"], height_mm=params.get("heightMm"))
     design["lockAspect"] = params.get("lockAspect", True)
     design["source"] = {"uploadId": upload["id"], "filename": upload["filename"]}
+    _set(job["id"], status="planning", progress=75)
     before = color_changes(design)
     design = annotate_warnings(plan_design(design))  # deterministic stitch plan + colour grouping
     design["planner"] = {"version": 1, "ai": False, "colorChangesBefore": before, "colorChangesAfter": color_changes(design)}
 
+    _set(job["id"], status="exporting", progress=90)
     with db.get_engine().begin() as conn:
         project = _project(conn, job["project_id"])
         revision = save_revision(conn, project, design)

@@ -1,9 +1,10 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import JobProgress, { nextProgress, type Progress } from "@/components/JobProgress";
 import RasterOptionsFields, { DEFAULT_RASTER, toAnalyzeOptions, type RasterChoice } from "@/components/RasterOptionsFields";
 import { ACCEPTED, api, ApiError, isRaster, waitForJob, type FabricPreset } from "@/lib/api";
-import { errorMessage, FABRICS, JOB_STATUS } from "@/lib/labels";
+import { errorMessage, FABRICS, JOB_STATUS, jobLabel } from "@/lib/labels";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 
@@ -11,8 +12,11 @@ export default function NewProjectPage() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
-  const [width, setWidth] = useState(50);
-  const [height, setHeight] = useState(30);
+  // Text, not numbers: a cleared number field would otherwise snap to "0" and typing gives "08".
+  const [widthText, setWidthText] = useState("50");
+  const [heightText, setHeightText] = useState("30");
+  const width = Number(widthText), height = Number(heightText);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const [lock, setLock] = useState(true);
   const [fabric, setFabric] = useState<FabricPreset>("woven_cotton");
   const [status, setStatus] = useState<string | null>(null);
@@ -40,20 +44,33 @@ export default function NewProjectPage() {
     if (!name) setName(f.name.replace(/\.(svg|png|jpe?g)$/i, ""));
   };
 
+  const step = (label: string, percent: number, hint: string | null = null) => {
+    setStatus(label);
+    setProgress(prev => nextProgress(prev, label, percent, { hint }));
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!file) return;
+    if (!(width >= 5 && width <= 300) || (!lock && !(height >= 5 && height <= 300))) { setError("寬高需在 5–300 mm 之間。"); return; }
     setError(null);
+    setProgress(null);
     try {
-      setStatus("建立專案");
+      // Free hosting sleeps when idle; the first request can wait about a minute for it to wake up.
+      step("連線伺服器、建立專案", 2, "伺服器閒置後第一次使用需要喚醒，可能多等約 1 分鐘。");
       const project = await api.createProject({ name: name.trim() || file.name, widthMm: width,
         heightMm: lock ? undefined : height, lockAspect: lock, fabricPreset: fabric });
-      setStatus("上傳檔案");
+      step("上傳檔案", 6);
       const up = await api.uploadUrl(project.id, file);
       await api.putUpload(up.uploadUrl, file, up.headers);
       const opts = rasterFile ? toAnalyzeOptions(raster) : {};
-      const job = await waitForJob(await api.analyze(project.id, up.uploadId, opts), j => setStatus(JOB_STATUS[j.status] ?? j.status));
+      step(JOB_STATUS.queued, 9);
+      const job = await waitForJob(await api.analyze(project.id, up.uploadId, opts), j => step(
+        jobLabel(j),
+        Math.max(10, j.progress),
+        rasterFile ? "圖片越大、顏色越多，分析越久（通常 30 秒到 2 分鐘）。" : null));
       if (job.status === "failed") { setError(errorMessage(job.errorCode)); return; }
+      step("完成，開啟專案", 100);
       router.push(`/studio/${project.id}`);
     } catch (err) {
       setError(errorMessage(err instanceof ApiError ? err.code : "upload_failed"));
@@ -89,11 +106,12 @@ export default function NewProjectPage() {
         <fieldset className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
           <legend className="mb-1 text-sm">最終刺繡尺寸</legend>
           <label className="text-sm">寬（mm）
-            <input type="number" className="field mt-1" min={5} max={300} step={0.5} value={width} onChange={e => setWidth(+e.target.value)} required />
+            <input type="text" inputMode="decimal" className="field mt-1" value={widthText} required
+              onChange={e => setWidthText(e.target.value.replace(/[^\d.]/g, ""))} />
           </label>
           <label className="text-sm">高（mm）
-            <input type="number" className="field mt-1" min={5} max={300} step={0.5} value={lock ? "" : height} disabled={lock}
-              onChange={e => setHeight(+e.target.value)} placeholder={lock ? "依比例" : ""} />
+            <input type="text" inputMode="decimal" className="field mt-1" value={lock ? "" : heightText} disabled={lock}
+              onChange={e => setHeightText(e.target.value.replace(/[^\d.]/g, ""))} placeholder={lock ? "依比例" : ""} />
           </label>
           <label className="col-span-2 flex items-center gap-2 text-sm sm:col-span-1 sm:pb-2">
             <input type="checkbox" checked={lock} onChange={e => setLock(e.target.checked)} />鎖定比例
@@ -108,9 +126,9 @@ export default function NewProjectPage() {
       </div>
 
       {error && <p className="card border-bad p-3 text-bad" role="alert">{error}</p>}
-      <div className="flex items-center gap-3">
+      <div className="space-y-3">
         <button className="btn btn-primary" type="submit" disabled={!file || busy}>{busy ? "處理中…" : "開始分析"}</button>
-        {busy && <span className="text-sm text-muted">{status}</span>}
+        {busy && progress && <div className="card p-4"><JobProgress p={progress} /></div>}
       </div>
     </form>
   );

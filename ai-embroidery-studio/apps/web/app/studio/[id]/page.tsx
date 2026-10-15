@@ -3,11 +3,11 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import RasterOptionsFields, { DEFAULT_RASTER, toAnalyzeOptions, type RasterChoice } from "@/components/RasterOptionsFields";
-import JobProgress, { type Progress } from "@/components/JobProgress";
+import JobProgress, { nextProgress, type Progress } from "@/components/JobProgress";
 import RegionMap, { RegionThumb } from "@/components/RegionMap";
 import StitchCanvas from "@/components/StitchCanvas";
 import { api, ApiError, waitForJob, type AppConfig, type DetailLevel, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches, type StitchType } from "@/lib/api";
-import { DETAIL_LEVELS, errorMessage, FABRICS, fabricLabel, JOB_STATUS, planReason, PROJECT_STATUS, STITCH_LABEL, warningLabel } from "@/lib/labels";
+import { DETAIL_LEVELS, errorMessage, FABRICS, fabricLabel, JOB_STATUS, jobLabel, planReason, PROJECT_STATUS, STITCH_LABEL, warningLabel } from "@/lib/labels";
 
 const DETAIL_COST: Record<DetailLevel, number> = { standard: 1, fine: 1.15, ultra: 1.35 };
 
@@ -112,12 +112,11 @@ export default function ProjectPage() {
 
   // Follow a job: button label plus progress bar.
   const track = (estimateS: number | null = null) => {
-    const startedAt = Date.now();
-    setProgress({ label: JOB_STATUS.queued, percent: 0, startedAt, estimateS });
+    setProgress(nextProgress(null, JOB_STATUS.queued, 0, { estimateS }));
     return (j: Job) => {
-      const label = JOB_STATUS[j.status] ?? j.status;
+      const label = jobLabel(j);
       setBusy(label);
-      setProgress({ label, percent: j.progress, startedAt, estimateS });
+      setProgress(prev => nextProgress(prev, label, j.progress));
     };
   };
 
