@@ -12,7 +12,7 @@ from lxml import etree
 from svgelements import Path
 
 from .engine import INKSTITCH_SVG_VERSION
-from .fabrics import apply_detail, clamp_params
+from .fabrics import apply_detail, clamp_params, default_params
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
@@ -20,6 +20,8 @@ INKSTITCH_NS = "http://inkstitch.org/namespace"
 NSMAP = {None: SVG_NS, "inkscape": INKSCAPE_NS, "inkstitch": INKSTITCH_NS}
 _HEX = re.compile(r"^#[0-9a-f]{6}$")
 RUNNING_STROKE_MM = 0.1
+SATIN_SPLIT_MM = 7.0       # satin stitches longer than this are split (wide columns stay flat and secure)
+TRIM_GAP_MM = 2.0          # within a region, jumps longer than this end in a trim
 
 
 class CompileInputError(Exception):
@@ -66,6 +68,7 @@ def _satin_attrs(p: dict, width_mm: float) -> dict[str, str]:
         _ink("center_walk_underlay"): _fmt(underlay),
         _ink("contour_underlay"): _fmt(underlay and width_mm >= 2.0),
         _ink("zigzag_underlay"): _fmt(underlay and width_mm >= 3.5),
+        _ink("max_stitch_length_mm"): _fmt(SATIN_SPLIT_MM),
     }
 
 
@@ -160,6 +163,10 @@ def compile_design(design: dict) -> bytes:
         if stitch_type not in ("fill", "running", "satin"):
             raise CompileInputError("unsupported_stitch_type", f"{stitch_type} is not available")
         params = clamp_params(stitch_type, apply_detail(stitch_type, region.get("params", {}), design.get("detailLevel")))
+        base_id = re.sub(r"[^\w-]", "_", str(region["id"]))[:56]
+        if stitch_type == "satin" and region.get("satinPath") == "columns" and region.get("shape") != "line":
+            _emit_columns(layer, region, design, params, hex_color, sx, sy, base_id)
+            continue
         center = _centerline(region)
         if stitch_type == "satin" or (stitch_type == "running" and region.get("runningPath") == "centerline"):
             if not center:
@@ -168,7 +175,6 @@ def compile_design(design: dict) -> bytes:
         if stitch_type == "fill" and region.get("shape") == "line":
             raise CompileInputError("fill_needs_area", f"region {region['id']} is a line")
 
-        base_id = re.sub(r"[^\w-]", "_", str(region["id"]))[:56]
         parts = split_components(d) if stitch_type == "fill" else [d]
         for index, part in enumerate(parts):
             node = etree.SubElement(layer, f"{{{SVG_NS}}}path")
@@ -177,6 +183,69 @@ def compile_design(design: dict) -> bytes:
             _style(node, stitch_type, region, params, center, hex_color, sx, sy)
 
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def _rails(d: str) -> list[list[tuple[float, float]]]:
+    rails = []
+    for sub in d.split("M")[1:]:
+        rails.append([tuple(float(v) for v in pt.split(",")) for pt in sub.replace("L", " ").split()])
+    return rails
+
+
+def _rails_d(rails) -> str:
+    return " ".join("M " + " L ".join(f"{x:.3f},{y:.3f}" for x, y in rail) for rail in rails)
+
+
+def _emit_columns(layer, region: dict, design: dict, params: dict, hex_color: str, sx: float, sy: float,
+                  base_id: str) -> None:
+    """Auto-digitised satin: uncovered parts filled first, then one satin column per stroke branch."""
+    cols = ((region.get("metrics") or {}).get("columns") or {})
+    items = cols.get("items") or []
+    if not items:
+        raise CompileInputError("missing_columns", f"region {region['id']} has no satin columns")
+    k = (sx + sy) / 2
+    nodes = []
+    if cols.get("patches"):
+        fill = clamp_params("fill", apply_detail("fill", default_params(design["fabricPreset"], "fill"),
+                                                 design.get("detailLevel")))
+        for i, part in enumerate(split_components(Path(cols["patches"]).d())):
+            node = etree.SubElement(layer, f"{{{SVG_NS}}}path")
+            node.set("id", f"{base_id}_f{i + 1}")
+            node.set("d", part)
+            node.set("style", f"fill:{hex_color};stroke:none;fill-rule:evenodd")
+            for key, value in _fill_attrs(fill).items():
+                node.set(key, value)
+            nodes.append((node, None, None))
+    # Sew the columns in a chain: each one starts at the end nearest to where the last one stopped.
+    pending = [(_rails(c["d"]), float(c["widthUnits"])) for c in items]
+    pos = None
+    while pending:
+        best, rev, dist = 0, False, float("inf")
+        for i, (rails, _) in enumerate(pending):
+            if pos is None:
+                break
+            for r, (x, y) in ((False, rails[0][0]), (True, rails[0][-1])):
+                dd = (x - pos[0]) ** 2 + (y - pos[1]) ** 2
+                if dd < dist:
+                    best, rev, dist = i, r, dd
+        rails, width = pending.pop(best)
+        if rev:
+            rails = [rail[::-1] for rail in rails]
+        node = etree.SubElement(layer, f"{{{SVG_NS}}}path")
+        node.set("id", f"{base_id}_s{len(nodes) + 1}")
+        node.set("d", _rails_d(rails))
+        node.set("style", f"fill:none;stroke:{hex_color};stroke-width:{RUNNING_STROKE_MM / max(k, 1e-9):.6g}")
+        for key, value in _satin_attrs(params, width * k).items():
+            node.set(key, value)
+        nodes.append((node, rails[0][0], rails[0][-1]))
+        pos = rails[0][-1]
+    # Trim only where the next column starts away from where this one ended.
+    for i, (node, _, end) in enumerate(nodes):
+        nxt = nodes[i + 1] if i + 1 < len(nodes) else None
+        far = nxt is None or end is None or nxt[1] is None or \
+            ((nxt[1][0] - end[0]) ** 2 + (nxt[1][1] - end[1]) ** 2) ** 0.5 * k > TRIM_GAP_MM
+        if far:
+            node.set(_ink("trim_after"), "True")
 
 
 def _style(node, stitch_type: str, region: dict, params: dict, center: dict | None, hex_color: str,

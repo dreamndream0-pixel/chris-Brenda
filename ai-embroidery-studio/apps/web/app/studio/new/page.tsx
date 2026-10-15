@@ -3,8 +3,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import JobProgress, { nextProgress, type Progress } from "@/components/JobProgress";
 import RasterOptionsFields, { DEFAULT_RASTER, toAnalyzeOptions, type RasterChoice } from "@/components/RasterOptionsFields";
-import { ACCEPTED, api, ApiError, isRaster, waitForJob, type FabricPreset } from "@/lib/api";
-import { errorMessage, FABRICS, JOB_STATUS, jobLabel } from "@/lib/labels";
+import { ACCEPTED, api, ApiError, isRaster, withRetry, type FabricPreset } from "@/lib/api";
+import { errorMessage, FABRICS, JOB_STATUS } from "@/lib/labels";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 
@@ -66,15 +66,12 @@ export default function NewProjectPage() {
         heightMm: lock ? undefined : height, lockAspect: lock, fabricPreset: fabric });
       step("上傳檔案", 6);
       const up = await api.uploadUrl(project.id, file);
-      await api.putUpload(up.uploadUrl, file, up.headers);
+      await withRetry(() => api.putUpload(up.uploadUrl, file, up.headers));
       const opts = { ...(rasterFile ? toAnalyzeOptions(raster) : {}), ...(byHeight ? { fitHeightMm: height } : {}) };
       step(JOB_STATUS.queued, 9);
-      const job = await waitForJob(await api.analyze(project.id, up.uploadId, opts), j => step(
-        jobLabel(j),
-        Math.max(10, j.progress),
-        rasterFile ? "圖片越大、顏色越多，分析越久（通常 30 秒到 2 分鐘）。" : null));
-      if (job.status === "failed") { setError(errorMessage(job.errorCode)); return; }
-      step("完成，開啟專案", 100);
+      await api.analyze(project.id, up.uploadId, opts);
+      // The analysis runs on the server; the project page follows it (and picks it up again
+      // if the phone locks or the browser drops this page in the background).
       router.push(`/studio/${project.id}`);
     } catch (err) {
       setError(errorMessage(err instanceof ApiError ? err.code : "upload_failed"));

@@ -54,7 +54,7 @@ const MESSAGES: Record<string, string> = {
   ai_unavailable: "暫時連不上 AI 服務。",
   ai_request_failed: "AI 請求失敗。",
   too_many_regions: "區域太多（超過 400 個），AI 無法分析。",
-  satin_needs_uniform_stroke: "緞面只適用於寬度均勻的線條狀區域。",
+  satin_needs_uniform_stroke: "緞面只適用於細長的筆畫狀區域。",
   satin_shape_mismatch: "轉成緞面會改變這個區域的輪廓，請保留填針。",
   satin_too_narrow: "以目前尺寸，這條線窄於 1 mm，無法做緞面。",
   satin_too_wide: "以目前尺寸，這條線寬於 7 mm，緞面會太鬆。",
@@ -112,6 +112,7 @@ export const STITCH_LABEL: Record<string, string> = { fill: "填針", running: "
 const PLAN_REASONS: Record<string, string> = {
   thin_line_centerline: "細線 → 中心線平針",
   uniform_stroke: "寬度均勻的線條 → 緞面",
+  satin_columns: "細長筆畫 → 緞面（沿筆畫方向自動分段）",
   area_fill: "面積 → 填針",
   preserve_shape: "保留原始輪廓 → 填針",
   wide_stroke: "粗描邊 → 緞面",

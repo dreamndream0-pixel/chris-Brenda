@@ -14,6 +14,12 @@ SATIN_MAX_WIDTH_CV = 0.25      # width variation along the stroke
 SATIN_MIN_COVERAGE = 0.75      # centreline x width must explain most of the area
 MIN_SHAPE_FIDELITY = 0.90     # measured overlap of reconstructed stroke and original silhouette
 AUTO_SATIN_MM = (1.5, 6.0)     # rules-only satin is more conservative than the hard limits
+# Auto-digitised satin columns (satin_columns.py): stitches wider than SATIN_SPLIT_MM are split.
+COLUMN_MEDIAN_MAX_MM = 8.0     # mostly-narrow shapes only; broad areas stay tatami
+COLUMN_P95_MAX_MM = 12.0
+COLUMN_MIN_MM = 0.6
+COLUMN_MIN_COVERAGE = 0.6      # the rest is filled underneath
+COLUMN_MAX_SPILL = 0.12
 OVERLAP_MM2 = 0.05
 
 
@@ -27,8 +33,35 @@ def stroke_width_mm(region: dict, design: dict) -> float | None:
     return c["widthUnits"] * unit_to_mm(design) if c else None
 
 
+def columns_blocker(region: dict, design: dict) -> str | None:
+    """None if the region can be sewn as auto-digitised satin columns at the current size."""
+    c = (region.get("metrics") or {}).get("columns")
+    if is_line(region) or not c or not c.get("items"):
+        return "satin_needs_uniform_stroke"
+    if c["coverage"] < COLUMN_MIN_COVERAGE or c["spill"] > COLUMN_MAX_SPILL:
+        return "satin_shape_mismatch"
+    k = unit_to_mm(design)
+    if c["medianWidthUnits"] * k > COLUMN_MEDIAN_MAX_MM or c["p95WidthUnits"] * k > COLUMN_P95_MAX_MM:
+        return "satin_too_wide"
+    if c["medianWidthUnits"] * k < 1.0 or c["p5WidthUnits"] * k < COLUMN_MIN_MM:
+        return "satin_too_narrow"
+    return None
+
+
 def satin_blocker(region: dict, design: dict) -> str | None:
     """None if a satin column is allowed for this region at the design's current size."""
+    blocker = _stroke_satin_blocker(region, design)
+    if blocker and not is_line(region) and columns_blocker(region, design) is None:
+        return None
+    return blocker
+
+
+def satin_mode(region: dict, design: dict) -> str:
+    """"centerline" (one uniform column along the stroke) or "columns" (auto-digitised)."""
+    return "centerline" if _stroke_satin_blocker(region, design) is None else "columns"
+
+
+def _stroke_satin_blocker(region: dict, design: dict) -> str | None:
     c = (region.get("metrics") or {}).get("centerline")
     if not c:
         return "satin_needs_uniform_stroke"
@@ -66,10 +99,13 @@ def rule_choice(region: dict, design: dict) -> tuple[str, str]:
         return "running", "stroke_line"
     fidelity = ((region.get("metrics") or {}).get("centerline") or {}).get("fidelity", 1.0)
     # At sub-millimetre widths, a single raster pixel is a large area fraction.
-    if w is not None and w < THIN_RUNNING_MM and fidelity >= 0.75:
+    if w is not None and w < THIN_RUNNING_MM and fidelity >= 0.75 and columns_blocker(region, design) is not None:
         return "running", "thin_line_centerline"
-    if w is not None and satin_blocker(region, design) is None and AUTO_SATIN_MM[0] <= w <= AUTO_SATIN_MM[1]:
+    if w is not None and _stroke_satin_blocker(region, design) is None and AUTO_SATIN_MM[0] <= w <= AUTO_SATIN_MM[1]:
         return "satin", "uniform_stroke"
+    if columns_blocker(region, design) is None:
+        # Letters, rings and other stroke-like shapes: satin along the stroke, like digitising software.
+        return "satin", "satin_columns"
     return "fill", "preserve_shape" if fidelity < MIN_SHAPE_FIDELITY else "area_fill"
 
 
@@ -77,6 +113,10 @@ def set_stitch(region: dict, design: dict, stitch: str) -> None:
     if region["stitchType"] != stitch or not region.get("params"):
         region["params"] = default_params(design["fabricPreset"], stitch)
     region["stitchType"] = stitch
+    if stitch == "satin" and not is_line(region):
+        region["satinPath"] = satin_mode(region, design)
+    else:
+        region.pop("satinPath", None)
     has_centerline = bool((region.get("metrics") or {}).get("centerline"))
     region["runningPath"] = "centerline" if stitch == "running" and has_centerline and (
         is_line(region) or (stroke_width_mm(region, design) or 99) < THIN_RUNNING_MM) else "outline"

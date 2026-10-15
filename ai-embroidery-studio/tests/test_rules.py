@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from services.worker.geometry import analyze_design
-from services.worker.rules import color_changes, plan_design, satin_blocker
+from services.worker.geometry import METRICS_VERSION, analyze_design
+from services.worker.rules import color_changes, plan_design, satin_blocker, satin_mode
 from services.worker.svg_import import import_svg
 
 UPLOADS = Path(__file__).resolve().parents[1] / "fixtures" / "uploads"
@@ -39,7 +39,11 @@ def test_rule_choices():
     planned = {r["id"]: r for r in plan_design(_design(SHAPES), reorder=False)["regions"]}
     assert planned["thin"]["stitchType"] == "running" and planned["thin"]["runningPath"] == "centerline"
     assert planned["ribbon"]["stitchType"] == "satin" and planned["ring"]["stitchType"] == "satin"
-    assert planned["rect"]["stitchType"] == "fill" and planned["H"]["stitchType"] == "fill"
+    # Letter strokes and small bars are auto-digitised into satin columns along each stroke.
+    assert planned["H"]["stitchType"] == "satin" and planned["H"]["satinPath"] == "columns"
+    assert len(planned["H"]["metrics"]["columns"]["items"]) >= 3
+    assert planned["rect"]["stitchType"] == "satin" and planned["rect"]["satinPath"] == "columns"
+    assert planned["ribbon"]["satinPath"] == "centerline"
     assert "zigzagSpacingMm" in planned["ribbon"]["params"]
 
 
@@ -53,10 +57,14 @@ def test_satin_centerline_reaches_flat_ends():
     assert abs(x0 - 10) < 0.15 and abs(x1 - 90) < 0.15
 
 
-def test_shape_mismatch_blocks_satin_even_with_uniform_width():
+def test_shape_mismatch_falls_back_to_satin_columns():
     planned = plan_design(_design({"ribbon": SHAPES["ribbon"]}), reorder=False)
     region = planned["regions"][0]
     region["metrics"]["centerline"]["fidelity"] = 0.7
+    # One uniform column no longer fits the silhouette, but the auto-digitised columns do.
+    assert satin_mode(region, planned) == "columns"
+    assert satin_blocker(region, planned) is None
+    region["metrics"]["columns"] = None
     assert satin_blocker(region, planned) == "satin_shape_mismatch"
     result = plan_design(planned, reorder=False)["regions"][0]
     assert result["stitchType"] == "fill"
@@ -67,7 +75,7 @@ def test_old_metrics_are_recomputed():
     design = _design({"strip": "M10 10 L90 10 L90 13 L10 13 Z"})
     design["regions"][0]["metrics"] = {"centerline": None}
     planned = plan_design(design, reorder=False)
-    assert planned["regions"][0]["metrics"]["version"] == 2
+    assert planned["regions"][0]["metrics"]["version"] == METRICS_VERSION
     assert planned["regions"][0]["stitchType"] == "satin"
 
 
@@ -112,3 +120,9 @@ def test_wide_svg_stroke_becomes_satin_only_in_range(width):
     w_mm = 3 * width / p["geometry"]["viewBox"][2]
     assert p["sizeMm"]["height"] >= 1  # a lone straight stroke still has its stroke height
     assert r["stitchType"] == ("satin" if 1.5 <= w_mm <= 6 else "running")
+
+
+def test_broad_areas_stay_tatami():
+    big = {"blob": "M 10 10 L 60 10 L 60 60 L 10 60 Z"}
+    planned = plan_design(_design(big), reorder=False)["regions"][0]
+    assert planned["stitchType"] == "fill"

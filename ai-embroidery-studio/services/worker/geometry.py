@@ -11,11 +11,14 @@ import cv2
 import numpy as np
 from svgelements import Path
 
+from .satin_columns import satin_columns
+
 PX_PER_MM = 10.0          # 0.1 mm raster
 MAX_RASTER_SIDE = 3000
 MIN_CENTERLINE_PX = 6
 MAX_CENTERLINE_WIDTH_MM = 8.0  # wider shapes are never sewn as satin/running, so skip thinning
-METRICS_VERSION = 2
+MAX_COLUMN_WIDTH_MM = 16.0     # beyond this, satin columns are not even considered
+METRICS_VERSION = 3
 
 
 def _scale(design: dict) -> tuple[float, float]:
@@ -167,7 +170,10 @@ def analyze_region(mask: np.ndarray, ppu: float, ppm: float = PX_PER_MM) -> dict
         "holes": holes,
         "components": outer,
         "centerline": None,
+        "columns": None,
     }
+    if result["thicknessUnits"] * ppu / ppm <= MAX_COLUMN_WIDTH_MM:
+        result["columns"] = _columns_metrics(mask, dist, ppu, ppm, x0, y0)
     if outer != 1 or holes > 1 or result["thicknessUnits"] * ppu / ppm > MAX_CENTERLINE_WIDTH_MM:
         return result
     closed = holes == 1
@@ -229,6 +235,28 @@ def analyze_region(mask: np.ndarray, ppu: float, ppm: float = PX_PER_MM) -> dict
         "fidelity": round(float(fidelity), 3),
     }
     return result
+
+
+def _columns_metrics(mask: np.ndarray, dist: np.ndarray, ppu: float, ppm: float, x0: int, y0: int) -> dict | None:
+    """Satin columns (see satin_columns.py) converted to viewBox units."""
+    found = satin_columns(mask, dist, ppm)
+    if not found:
+        return None
+
+    def unit(pts: np.ndarray) -> str:
+        return " L ".join(f"{(x + x0 - 2) / ppu:.3f},{(y + y0 - 2) / ppu:.3f}" for x, y in pts)
+
+    cols, widths = [], []
+    for c in found["columns"]:
+        # Two rails with the same number of nodes: Ink/Stitch pairs the nodes as rungs.
+        cols.append({"d": f"M {unit(c['left'])} M {unit(c['right'])}",
+                     "widthUnits": round(float(np.median(c["widths"])) / ppu, 4)})
+        widths.append(c["widths"])
+    w = np.concatenate(widths) / ppu
+    patches = " ".join(f"M {unit(p)} Z" for p in found["patches"]) or None
+    return {"items": cols, "coverage": found["coverage"], "spill": found["spill"],
+            "medianWidthUnits": round(float(np.median(w)), 4), "p95WidthUnits": round(float(np.percentile(w, 95)), 4),
+            "p5WidthUnits": round(float(np.percentile(w, 5)), 4), "patches": patches}
 
 
 def line_mask(svg_path: str, width_units: float, ppu: float, width: int, height: int) -> np.ndarray:

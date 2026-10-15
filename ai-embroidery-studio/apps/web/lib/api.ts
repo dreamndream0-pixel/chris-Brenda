@@ -113,14 +113,48 @@ export const api = {
 };
 
 // Generous: free hosting tiers (e.g. 0.1 vCPU) can take many minutes per compile.
+export const ACTIVE_JOB_STATUSES: JobStatus[] = ["queued", "preprocessing", "planning", "compiling", "validating", "exporting"];
+
+// Jobs run on the server, so the page only has to keep asking. Phones pause pages in the
+// background and drop connections: network errors are retried, and the page asks again
+// right away when it becomes visible.
 export async function waitForJob(job: Job, onUpdate?: (j: Job) => void, timeoutMs = 30 * 60_000): Promise<Job> {
   const start = Date.now();
   let current = job;
+  let failures = 0;
   while (current.status !== "ready" && current.status !== "failed") {
     if (Date.now() - start > timeoutMs) throw new ApiError(0, "job_timeout");
-    await new Promise(r => setTimeout(r, Date.now() - start > 60_000 ? 3000 : 800));
-    current = await api.job(job.jobId);
-    onUpdate?.(current);
+    const delay = failures ? Math.min(15_000, 1000 * 2 ** failures) : Date.now() - start > 60_000 ? 3000 : 800;
+    await sleepOrVisible(delay);
+    try {
+      current = await api.job(job.jobId);
+      failures = 0;
+      onUpdate?.(current);
+    } catch (e) {
+      // 4xx other than timeouts are real answers (e.g. the job is gone); everything else is retried.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) throw e;
+      failures++;
+    }
   }
   return current;
+}
+
+function sleepOrVisible(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    const done = () => { clearTimeout(t); document.removeEventListener("visibilitychange", onVis); resolve(); };
+    const onVis = () => { if (document.visibilityState === "visible") done(); };
+    const t = setTimeout(done, ms);
+    document.addEventListener("visibilitychange", onVis);
+  });
+}
+
+// fetch() throws TypeError when the connection drops (e.g. the phone locks); retry those.
+export async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  for (let i = 0; ; i++) {
+    try { return await fn(); } catch (e) {
+      const transient = !(e instanceof ApiError) || e.status === 0 || e.status >= 500;
+      if (!transient || i >= attempts - 1) throw e;
+      await sleepOrVisible(1000 * 2 ** i);
+    }
+  }
 }

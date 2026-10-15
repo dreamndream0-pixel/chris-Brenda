@@ -235,7 +235,9 @@ function drawLines(ctx: CanvasRenderingContext2D, P: number[], from: number, to:
 function drawThread(ctx: CanvasRenderingContext2D, P: number[], from: number, to: number, k: number, ox: number, oy: number,
   colors: string[], jumps: boolean) {
   const tw = Math.max(1, THREAD_MM * k);
-  const detailed = tw >= 2.5;                           // sheen gradients only when the thread is wide enough to see
+  const dpr = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
+  const detailed = tw * dpr >= 3;                       // sheen once the thread covers a few device pixels
+  const twist = tw * dpr >= 6;                          // twisted-fibre highlights when zoomed in
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   let px: number | null = null, py = 0;
   if (from > 0) { const i = from - 1; px = ox + P[i * 4] * k; py = oy + P[i * 4 + 1] * k; }
@@ -266,6 +268,18 @@ function drawThread(ctx: CanvasRenderingContext2D, P: number[], from: number, to
         }
         ctx.lineWidth = tw;
         ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(x, y); ctx.stroke();
+        if (twist && len > tw * 1.5) {
+          // short slanted glints along the thread, like light on twisted fibres
+          const ux = dx / len, uy = dy / len, nx = -uy, ny = ux, step = tw * 0.9;
+          ctx.strokeStyle = t.light; ctx.lineWidth = Math.max(0.6, tw * 0.18); ctx.globalAlpha = 0.55;
+          ctx.beginPath();
+          for (let s = step * 0.5; s < len - step * 0.3; s += step) {
+            const cx = px + ux * s, cy = py + uy * s;
+            ctx.moveTo(cx - ux * tw * 0.25 + nx * tw * 0.3, cy - uy * tw * 0.25 + ny * tw * 0.3);
+            ctx.lineTo(cx + ux * tw * 0.25 - nx * tw * 0.1, cy + uy * tw * 0.25 - ny * tw * 0.1);
+          }
+          ctx.stroke(); ctx.globalAlpha = 1;
+        }
         if (detailed) {
           // needle penetration at the stitch end
           ctx.fillStyle = "rgba(0,0,0,.28)";

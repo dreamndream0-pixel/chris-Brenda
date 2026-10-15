@@ -47,3 +47,19 @@ def test_detail_level_tightens_fill():
     assert attrs("standard") == (0.4, 3.0)
     assert attrs("fine") == (0.35, 2.5)
     assert attrs("ultra") == (0.3, 2.0)
+
+
+def test_satin_columns_are_written_as_two_rail_satins():
+    from services.worker.rules import plan_design
+
+    h_letter = "M 30 10 L 33 10 L 33 18 L 40 18 L 40 10 L 43 10 L 43 29 L 40 29 L 40 21 L 33 21 L 33 29 L 30 29 Z"
+    design = _design(h_letter) | {"sizeMm": {"width": 50, "height": 40}, "geometry": {"viewBox": [0, 0, 50, 40]},
+                                  "fabricPreset": "woven_cotton"}
+    planned = plan_design(design, reorder=False)
+    region = planned["regions"][0]
+    assert region["stitchType"] == "satin" and region["satinPath"] == "columns"
+    paths = etree.fromstring(compile_design(planned)).findall(".//{http://www.w3.org/2000/svg}path")
+    satins = [p for p in paths if p.get(f"{{{INKSTITCH_NS}}}satin_column") == "True"]
+    assert len(satins) >= 3
+    assert all(p.get("d").count("M") == 2 for p in satins)           # exactly two rails each
+    assert paths[-1].get(f"{{{INKSTITCH_NS}}}trim_after") == "True"   # region ends with a trim

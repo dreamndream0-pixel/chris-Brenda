@@ -1,12 +1,12 @@
 "use client";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import RasterOptionsFields, { DEFAULT_RASTER, toAnalyzeOptions, type RasterChoice } from "@/components/RasterOptionsFields";
 import JobProgress, { nextProgress, type Progress } from "@/components/JobProgress";
 import RegionMap, { RegionThumb } from "@/components/RegionMap";
 import StitchCanvas from "@/components/StitchCanvas";
-import { api, ApiError, waitForJob, type AppConfig, type DetailLevel, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches, type StitchType } from "@/lib/api";
+import { ACTIVE_JOB_STATUSES, api, ApiError, waitForJob, withRetry, type AppConfig, type DetailLevel, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches, type StitchType } from "@/lib/api";
 import { DETAIL_LEVELS, errorMessage, FABRICS, fabricLabel, JOB_STATUS, jobLabel, planReason, PROJECT_STATUS, STITCH_LABEL, warningLabel } from "@/lib/labels";
 
 const DETAIL_COST: Record<DetailLevel, number> = { standard: 1, fine: 1.15, ultra: 1.35 };
@@ -55,7 +55,7 @@ export default function ProjectPage() {
 
   const load = useCallback(async () => {
     try {
-      const d = await api.getProject(id);
+      const d = await withRetry(() => api.getProject(id));
       setDetail(d);
       setRegionEdits({}); setPaletteEdits({});
       if (d.design) {
@@ -82,9 +82,42 @@ export default function ProjectPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // A job keeps running on the server while the phone is locked or the page is closed. Whenever
+  // the page shows a job that is still running, follow it again; when the page comes back to the
+  // foreground, refresh so finished work shows up.
+  const following = useRef<string | null>(null);
+  useEffect(() => {
+    const active = detail?.jobs.find(j => ACTIVE_JOB_STATUSES.includes(j.status));
+    if (!active || following.current) return;
+    following.current = active.jobId;
+    const label = jobLabel(active);
+    setBusy(label);
+    setProgress(nextProgress(null, label, active.progress,
+      { startedAt: active.createdAt ? Date.parse(active.createdAt) : Date.now() }));
+    waitForJob(active, j => { const l = jobLabel(j); setBusy(l); setProgress(prev => nextProgress(prev, l, j.progress)); })
+      .then(j => { if (j.status === "failed") setError(errorMessage(j.errorCode)); })
+      .catch(e => setError(errorMessage(e instanceof ApiError ? e.code : "unknown")))
+      .finally(() => { following.current = null; setBusy(null); setProgress(null); load(); });
+  }, [detail, load]);
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible" && !following.current) load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [load]);
+
   if (!detail) return <p className="text-muted">{error ?? "載入中…"}</p>;
   const { project, design } = detail;
-  if (!design) return <p className="card p-4">這個專案還沒有成功匯入的設計。<Link className="underline" href="/studio/new">重新上傳</Link></p>;
+  if (!design) {
+    return progress ? (
+      <div className="mx-auto max-w-2xl space-y-3">
+        <h1 className="text-2xl font-semibold">{project.name}</h1>
+        <div className="card p-4"><JobProgress p={progress} /></div>
+        <p className="text-xs text-muted">分析在伺服器上進行，可以先關掉螢幕或切到別的 App，回來會自動接著顯示。</p>
+      </div>
+    ) : (
+      <p className="card p-4">{error ? `${error} ` : ""}這個專案還沒有成功匯入的設計。<Link className="underline" href="/studio/new">重新上傳</Link></p>
+    );
+  }
 
   const regionPatches: RegionPatch[] = Object.entries(regionEdits).map(([rid, e]) => ({ id: rid, ...e }));
   const palettePatches = Object.entries(paletteEdits).map(([cid, hex]) => ({ id: cid, hex }));
@@ -118,8 +151,9 @@ export default function ProjectPage() {
 
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label); setError(null);
+    following.current = "user";
     try { await fn(); } catch (e) { setError(errorMessage(e instanceof ApiError ? e.code : "unknown")); }
-    finally { setBusy(null); setProgress(null); }
+    finally { following.current = null; setBusy(null); setProgress(null); }
   };
 
   // Follow a job: button label plus progress bar.
@@ -390,7 +424,7 @@ export default function ProjectPage() {
                 );
               })}
             </ul>
-            <p className="text-xs text-muted">平針：細線沿中心線，其他沿外框一圈。緞面：只適用寬 1–7 mm、寬度均勻的線條。取消勾選＝不繡這個區域。</p>
+            <p className="text-xs text-muted">平針：細線沿中心線，其他沿外框一圈。緞面：細長筆畫（字、圓圈、線條），線沿筆畫方向來回，超過 7 mm 的寬處自動分段。填針：大面積。取消勾選＝不繡這個區域。</p>
             {(regionPatches.length > 0 || palettePatches.length > 0) && (
               <div className="flex items-center justify-between text-xs">
                 <span className="text-warn">有未儲存的修改，按「儲存並編譯」套用。</span>

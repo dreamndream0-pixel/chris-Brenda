@@ -40,7 +40,7 @@ export default function JobProgress({ p }: { p: Progress }) {
 // Keeps stepStartedAt in sync: a new percent starts a new step.
 export function nextProgress(prev: Progress | null, label: string, percent: number, extra: Partial<Progress> = {}): Progress {
   const now = Date.now();
-  const startedAt = prev?.startedAt ?? now;
+  const startedAt = prev?.startedAt ?? extra.startedAt ?? now;
   const stepStartedAt = prev && prev.percent === percent ? prev.stepStartedAt ?? now : now;
   return { ...prev, ...extra, label, percent, startedAt, stepStartedAt };
 }
