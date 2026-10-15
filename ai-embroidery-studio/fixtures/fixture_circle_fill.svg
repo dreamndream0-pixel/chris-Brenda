@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:inkstitch="http://inkstitch.org/namespace" width="40mm" height="40mm" viewBox="0 0 40 40">
+  <metadata><inkstitch:inkstitch_svg_version>4</inkstitch:inkstitch_svg_version></metadata>
+  <g id="layer1" inkscape:groupmode="layer" inkscape:label="fill">
+    <circle id="r1" cx="20" cy="20" r="15" style="fill:#654a3b;stroke:none"
+      inkstitch:fill_method="tatami_fill" inkstitch:angle="45"
+      inkstitch:row_spacing_mm="0.35" inkstitch:max_stitch_length_mm="3.0"
+      inkstitch:fill_underlay="True" inkstitch:pull_compensation_mm="0.1"/>
+  </g>
+</svg>

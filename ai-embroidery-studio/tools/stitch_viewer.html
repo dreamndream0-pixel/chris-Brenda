@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gate A 針跡預覽</title>
+<style>
+:root { --bg:#f6f4f1; --panel:#fff; --ink:#1d1b19; --muted:#6b645d; --line:#e2ddd6; --ok:#1e7d45; --bad:#b3261e; --fabric:#fbfaf7; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#151412; --panel:#1f1d1a; --ink:#ece8e2; --muted:#a39b91; --line:#34302b; --ok:#5cc28a; --bad:#f2827a; --fabric:#262320; }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui, "Noto Sans TC", sans-serif; }
+main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:16px; grid-template-columns:260px 1fr; }
+@media (max-width:760px) { main { grid-template-columns:1fr; } }
+h1 { font-size:18px; margin:0 0 4px; grid-column:1/-1; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+.list button { display:block; width:100%; text-align:left; background:none; border:1px solid transparent; border-radius:8px; padding:8px; color:inherit; cursor:pointer; font:inherit; }
+.list button[aria-current="true"] { border-color:var(--line); background:var(--bg); }
+.tag { font-size:12px; font-weight:600; }
+.tag.ok { color:var(--ok); } .tag.bad { color:var(--bad); }
+canvas { width:100%; height:auto; background:var(--fabric); border-radius:8px; display:block; touch-action:none; }
+.controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:10px; }
+.controls input[type=range] { flex:1 1 200px; }
+button.btn { font:inherit; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:inherit; cursor:pointer; }
+dl { display:grid; grid-template-columns:auto 1fr; gap:2px 12px; margin:10px 0 0; font-variant-numeric:tabular-nums; }
+dt { color:var(--muted); } dd { margin:0; }
+.swatches span { display:inline-block; width:14px; height:14px; border-radius:3px; margin-right:4px; vertical-align:middle; border:1px solid var(--line); }
+.err { color:var(--bad); font-size:13px; }
+.note { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Gate A 針跡預覽 <span class="note">— 由匯出的 DST 重新解碼，非從 SVG 模擬；僅 2D 示意，不代表布料張力</span></h1>
+  <aside class="panel list" id="list"></aside>
+  <section class="panel">
+    <canvas id="cv" width="900" height="560"></canvas>
+    <div class="controls">
+      <button class="btn" id="play">播放</button>
+      <input type="range" id="seek" min="0" max="0" value="0" aria-label="時間線">
+      <label>速度 <select id="speed"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>x</label>
+      <label><input type="checkbox" id="pts"> 針點</label>
+      <label><input type="checkbox" id="jumps" checked> 跳針</label>
+    </div>
+    <dl id="stats"></dl>
+    <div id="errs" class="err"></div>
+  </section>
+</main>
+<script>
+const DATA = /*__GATE_A_DATA__*/[];
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const seek = document.getElementById('seek'), playBtn = document.getElementById('play');
+let cur = null, pos = 0, playing = false, last = 0;
+
+function select(i) {
+  cur = DATA[i]; pos = cur ? cur.points.length / 4 : 0;
+  document.querySelectorAll('#list button').forEach((b, j) => b.setAttribute('aria-current', j === i));
+  seek.max = pos; seek.value = pos; stop(); stats(); draw();
+}
+function stats() {
+  const s = cur.summary;
+  document.getElementById('stats').innerHTML =
+    `<dt>針數</dt><dd>${s.stitches}</dd><dt>尺寸</dt><dd>${s.width_mm} × ${s.height_mm} mm</dd>` +
+    `<dt>線色</dt><dd class="swatches">${cur.colors.slice(0, Math.max(1, s.color_blocks)).map(c => `<span style="background:${c}"></span>`).join('')}${s.color_blocks}</dd>` +
+    `<dt>換色</dt><dd>${s.color_changes}</dd><dt>跳針 / 剪線</dt><dd>${s.jumps} / ${s.trims}</dd>`;
+  document.getElementById('errs').textContent = cur.errors.join('；');
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!cur) return;
+  const pad = 30, w = Math.max(cur.widthMm, 1), h = Math.max(cur.heightMm, 1);
+  const k = Math.min((cv.width - 2 * pad) / w, (cv.height - 2 * pad) / h);
+  const ox = (cv.width - w * k) / 2, oy = (cv.height - h * k) / 2;
+  const P = cur.points, n = Math.min(pos, P.length / 4);
+  const showPts = document.getElementById('pts').checked, showJumps = document.getElementById('jumps').checked;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  let px = null, py = null;
+  for (let i = 0; i < n; i++) {
+    const x = ox + P[i * 4] * k, y = oy + P[i * 4 + 1] * k, cmd = P[i * 4 + 2], c = P[i * 4 + 3];
+    if (cmd === 0 && px !== null) {
+      ctx.strokeStyle = cur.colors[c] || '#888'; ctx.lineWidth = Math.max(1, 0.35 * k * 0.6);
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(x, y); ctx.stroke();
+      if (showPts) { ctx.fillStyle = '#0008'; ctx.fillRect(x - 1, y - 1, 2, 2); }
+    } else if (cmd === 1 && showJumps && px !== null) {
+      ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = '#d33a'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(x, y); ctx.stroke(); ctx.restore();
+    }
+    if (cmd !== 3) { px = x; py = y; }
+  }
+}
+function tick(t) {
+  if (!playing) return;
+  const sp = parseFloat(document.getElementById('speed').value);
+  pos = Math.min(cur.points.length / 4, pos + Math.max(1, Math.round((t - last) / 1000 * 400 * sp)));
+  last = t; seek.value = pos; draw();
+  if (pos >= cur.points.length / 4) stop(); else requestAnimationFrame(tick);
+}
+function stop() { playing = false; playBtn.textContent = '播放'; }
+playBtn.onclick = () => {
+  if (!cur) return;
+  if (playing) return stop();
+  if (pos >= cur.points.length / 4) pos = 0;
+  playing = true; playBtn.textContent = '暫停'; last = performance.now(); requestAnimationFrame(tick);
+};
+seek.oninput = () => { pos = +seek.value; draw(); };
+document.getElementById('pts').onchange = draw;
+document.getElementById('jumps').onchange = draw;
+
+const list = document.getElementById('list');
+if (!DATA.length) list.innerHTML = '<p class="note">沒有資料。請先執行 gate_a.py。</p>';
+DATA.forEach((d, i) => {
+  const b = document.createElement('button');
+  b.innerHTML = `${d.fixture}<br><span class="tag ${d.ok ? 'ok' : 'bad'}">${d.ok ? 'PASS' : 'FAIL'}</span> <span class="note">${d.summary.stitches} 針</span>`;
+  b.onclick = () => select(i); list.appendChild(b);
+});
+if (DATA.length) select(0);
+</script>
+</body>
+</html>

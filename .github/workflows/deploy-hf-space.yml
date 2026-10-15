@@ -1,0 +1,48 @@
+# Deploys the embroidery API to a Hugging Face Docker Space (manual only: Docker Spaces now need HF PRO).
+# Repository secrets: HF_TOKEN, SUPABASE_SERVICE_ROLE_KEY, EMB_DATABASE_URL, (optional) ANTHROPIC_API_KEY
+# Repository variables: HF_SPACE, SUPABASE_URL, WEB_ORIGIN
+name: Deploy embroidery API to Hugging Face
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-hf-space
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::notice::HF_TOKEN is not set; skipping deployment (see ai-embroidery-studio/docs/DEPLOY_FREE.md)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.skip != 'true'
+      - uses: actions/setup-python@v5
+        if: steps.cfg.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+      - name: Deploy
+        if: steps.cfg.outputs.skip != 'true'
+        working-directory: ai-embroidery-studio
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+          WEB_ORIGIN: ${{ vars.WEB_ORIGIN }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EMB_DATABASE_URL: ${{ secrets.EMB_DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          pip install --quiet huggingface_hub==1.33.0
+          python tools/deploy_hf_space.py

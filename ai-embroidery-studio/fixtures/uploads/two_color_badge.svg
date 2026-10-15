@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <!-- 兩色徽章：外圈平針、星形填針、底部色帶填針 -->
+  <circle cx="60" cy="60" r="56" fill="none" stroke="#1f2a44" stroke-width="1.5"/>
+  <path d="M60 14 L71 46 L105 46 L78 66 L88 98 L60 78 L32 98 L42 66 L15 46 L49 46 Z" fill="#b5402a"/>
+  <rect x="28" y="100" width="64" height="10" rx="3" fill="#1f2a44"/>
+</svg>
