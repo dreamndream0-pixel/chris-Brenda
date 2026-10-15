@@ -467,3 +467,12 @@ def test_analyze_can_size_by_height(client):
     size = client.get(f"/api/v1/projects/{pid}", headers=ALICE).json()["design"]["sizeMm"]
     assert abs(size["height"] - 40) < 0.05
     assert abs(size["width"] - 40 * vw / vh) < 0.5
+
+
+def test_tiny_sizes_down_to_2mm(client):
+    pid, _ = upload(client, ALICE, SIMPLE_SVG, width=50)
+    ok = client.patch(f"/api/v1/projects/{pid}/design", json={"baseRevision": 1, "sizeMm": {"width": 4}}, headers=ALICE)  # 4 x 2 mm
+    assert ok.status_code == 200, ok.json()
+    assert client.post(f"/api/v1/projects/{pid}/compile", json={"revision": 2}, headers=ALICE).json()["status"] == "ready"
+    too_small = client.patch(f"/api/v1/projects/{pid}/design", json={"baseRevision": 2, "sizeMm": {"width": 3}}, headers=ALICE)  # height 1.5 mm
+    assert too_small.status_code == 422

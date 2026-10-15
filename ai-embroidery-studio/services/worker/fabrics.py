@@ -61,7 +61,7 @@ SATIN_WIDTH_MM = (1.0, 7.0)
 THIN_RUNNING_MM = 1.2
 INT_PARAMS = {"repeats"}
 
-SIZE_LIMITS_MM = (5.0, 300.0)
+SIZE_LIMITS_MM = (2.0, 300.0)   # very small sizes (e.g. 2-5 mm tall lettering) only suit simple shapes
 
 # Detail level: denser rows and shorter stitches follow small shapes and curves more closely,
 # at the cost of more stitches (time) and more stiffness / puckering on thin or stretchy fabric.

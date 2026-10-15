@@ -3,7 +3,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import JobProgress, { nextProgress, type Progress } from "@/components/JobProgress";
 import RasterOptionsFields, { DEFAULT_RASTER, toAnalyzeOptions, type RasterChoice } from "@/components/RasterOptionsFields";
-import { ACCEPTED, api, ApiError, isRaster, withRetry, type FabricPreset } from "@/lib/api";
+import { ACCEPTED, api, ApiError, isRaster, SIZE_MAX_MM, SIZE_MIN_MM, sizeInRange, withRetry, type FabricPreset } from "@/lib/api";
 import { errorMessage, FABRICS, JOB_STATUS } from "@/lib/labels";
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -54,9 +54,9 @@ export default function NewProjectPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!file) return;
-    const ok = (v: number) => v >= 5 && v <= 300;
+    const ok = sizeInRange;
     const byHeight = lock && sizeBy === "height";
-    if (lock ? !ok(byHeight ? height : width) : !(ok(width) && ok(height))) { setError("寬高需在 5–300 mm 之間。"); return; }
+    if (lock ? !ok(byHeight ? height : width) : !(ok(width) && ok(height))) { setError(`寬高需在 ${SIZE_MIN_MM}–${SIZE_MAX_MM} mm 之間。`); return; }
     setError(null);
     setProgress(null);
     try {

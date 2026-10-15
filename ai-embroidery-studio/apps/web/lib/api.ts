@@ -10,6 +10,10 @@ export interface Project {
   currentRevision: number; compiledRevision: number | null; widthMm: number | null; heightMm: number | null;
   colorCount: number | null; stitchCount: number | null; createdAt: string; updatedAt: string;
 }
+// Same limits as services/worker/fabrics.py SIZE_LIMITS_MM.
+export const SIZE_MIN_MM = 2, SIZE_MAX_MM = 300;
+export const sizeInRange = (v: number) => Number.isFinite(v) && v >= SIZE_MIN_MM && v <= SIZE_MAX_MM;
+
 export type StitchType = "fill" | "running" | "satin";
 export type DetailLevel = "standard" | "fine" | "ultra";
 export type ContourDetail = "preserve" | "balanced" | "clean";

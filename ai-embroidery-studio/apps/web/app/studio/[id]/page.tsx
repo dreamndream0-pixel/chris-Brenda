@@ -6,7 +6,7 @@ import RasterOptionsFields, { DEFAULT_RASTER, toAnalyzeOptions, type RasterChoic
 import JobProgress, { nextProgress, type Progress } from "@/components/JobProgress";
 import RegionMap, { RegionThumb } from "@/components/RegionMap";
 import StitchCanvas from "@/components/StitchCanvas";
-import { ACTIVE_JOB_STATUSES, api, ApiError, waitForJob, withRetry, type AppConfig, type DetailLevel, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches, type StitchType } from "@/lib/api";
+import { ACTIVE_JOB_STATUSES, api, ApiError, SIZE_MAX_MM, SIZE_MIN_MM, sizeInRange, waitForJob, withRetry, type AppConfig, type DetailLevel, type FabricPreset, type Job, type ProjectDetail, type RegionPatch, type Stitches, type StitchType } from "@/lib/api";
 import { DETAIL_LEVELS, errorMessage, FABRICS, fabricLabel, JOB_STATUS, jobLabel, planReason, PROJECT_STATUS, STITCH_LABEL, warningLabel } from "@/lib/labels";
 
 const DETAIL_COST: Record<DetailLevel, number> = { standard: 1, fine: 1.15, ultra: 1.35 };
@@ -141,7 +141,7 @@ export default function ProjectPage() {
     if (side === "w") { setWidthText(text); if (lock || forceLock) setHeightText(other(v * aspect)); }
     else { setHeightText(text); if (lock) setWidthText(other(v / aspect)); }
   };
-  const inRange = (v: number) => Number.isFinite(v) && v >= 5 && v <= 300;
+  const inRange = sizeInRange;
   const sizeOk = inRange(width) && inRange(shownHeight);
   const compiled = project.compiledRevision;
   const stale = compiled !== null && compiled !== project.currentRevision;
@@ -256,8 +256,10 @@ export default function ProjectPage() {
                   onChange={e => editSize("h", e.target.value)} />
               </label>
             </div>
-            {!sizeOk && <p className="text-xs text-bad">寬高需在 5–300 mm 之間。</p>}
-            {sizeOk && Math.min(width, shownHeight) < 50 && (
+            {!sizeOk && <p className="text-xs text-bad">寬高需在 {SIZE_MIN_MM}–{SIZE_MAX_MM} mm 之間。</p>}
+            {sizeOk && Math.min(width, shownHeight) < 10 ? (
+              <p className="text-xs text-warn">非常小（10 mm 以下）：只適合簡單圖形或單一粗字，細節會改成平針或縫不出來，請務必試繡。</p>
+            ) : sizeOk && Math.min(width, shownHeight) < 50 && (
               <p className="text-xs text-warn">小於 50 mm 時細字和細線容易糊掉；需要細節請放大到 60 mm 以上。</p>
             )}
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={lock} onChange={e => { setLock(e.target.checked); if (e.target.checked) editSize("w", widthText, true); }} />鎖定比例</label>

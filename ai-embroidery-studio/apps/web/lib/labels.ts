@@ -76,8 +76,8 @@ const MESSAGES: Record<string, string> = {
   validation_failed: "輸出檔驗證未通過（尺寸或針數異常）。",
   not_compiled: "請先完成編譯。",
   queue_unavailable: "背景工作服務未啟動（Redis / worker）。",
-  height_out_of_range: "依比例換算後的高度超出 5–300 mm。",
-  invalid_input: "輸入值不正確（尺寸需在 5–300 mm）。",
+  height_out_of_range: "依比例換算後的高度超出 2–300 mm。",
+  invalid_input: "輸入值不正確（尺寸需在 2–300 mm）。",
   job_timeout: "等待逾時，請重新整理查看狀態。",
 };
 
