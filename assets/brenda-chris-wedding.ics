@@ -1,0 +1,16 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Brenda and Chris//Wedding Invitation//ZH
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:brenda-chris-20260530@dreamndream0-pixel.github.io
+DTSTAMP:20261016T000000Z
+DTSTART;VALUE=DATE:20260530
+DTEND;VALUE=DATE:20260531
+SUMMARY:Brenda & Chris 的婚禮
+LOCATION:臺中
+DESCRIPTION:09:00 西區戶政事務所\n10:00 台中文學公園\n11:00 
+ 豐樂公園\n12:10 大樓用餐\n14:30 入厝
+URL:https://dreamndream0-pixel.github.io/chris-Brenda/
+END:VEVENT
+END:VCALENDAR
